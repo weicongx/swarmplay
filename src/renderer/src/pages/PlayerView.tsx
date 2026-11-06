@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { PlayerCommand, PlayerState, PlayerTrack } from '@shared/types'
-import { formatClock } from '../format'
+import type { PlayerCommand, PlayerState, PlayerTrack, Upscaler } from '@shared/types'
+import { formatClock, UPSCALERS } from '../format'
 
 const HIDE_CONTROLS_MS = 3000
 
@@ -15,7 +15,12 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [seekPreview, setSeekPreview] = useState<number | null>(null)
   const [idle, setIdle] = useState(false)
+  const [nvidia, setNvidia] = useState(false)
   const send = (cmd: PlayerCommand): void => void window.api.playerCommand(cmd)
+
+  useEffect(() => {
+    window.api.getPlayerInfo().then((i) => setNvidia(i.nvidia))
+  }, [])
 
   // Click pauses, double-click toggles fullscreen; wait briefly so a double-click
   // doesn't also pause and unpause.
@@ -89,6 +94,11 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
         m: () => send({ type: 'toggle-mute' }),
         f: () => send({ type: 'fullscreen' }),
         n: () => state.hasNext && send({ type: 'next' }),
+        u: () => {
+          // Cycle the upscaler, for quick before/after comparisons.
+          const modes = UPSCALERS.filter((x) => x.id !== 'rtx' || nvidia).map((x) => x.id)
+          send({ type: 'upscaler', mode: modes[(modes.indexOf(state.upscaler) + 1) % modes.length] })
+        },
         Escape: () => (state.fullscreen ? send({ type: 'fullscreen', on: false }) : send({ type: 'close' }))
       }
       const fn = handled[e.key]
@@ -99,7 +109,7 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [state.volume, state.fullscreen, state.hasNext])
+  }, [state.volume, state.fullscreen, state.hasNext, state.upscaler, nvidia])
 
   const duration = state.duration ?? 0
   const shownPos = seekPreview ?? state.timePos
@@ -175,6 +185,18 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
             onPick={(id) => id != null && send({ type: 'audio', id })}
           />
           <TrackSelect label="Subtitles" tracks={state.subTracks} allowOff onPick={(id) => send({ type: 'sub', id })} />
+          <select
+            className="player-track"
+            title="Upscaling (U cycles through)"
+            value={state.upscaler}
+            onChange={(e) => send({ type: 'upscaler', mode: e.target.value as Upscaler })}
+          >
+            {UPSCALERS.filter((u) => u.id !== 'rtx' || nvidia).map((u) => (
+              <option key={u.id} value={u.id}>
+                Upscale: {u.short}
+              </option>
+            ))}
+          </select>
           <button className="ctl" onClick={() => send({ type: 'fullscreen' })} title="Fullscreen (F, or double-click the video)">
             {state.fullscreen ? '🗗' : '⛶'}
           </button>

@@ -115,7 +115,8 @@ function defaultSettings(): Settings {
     mpvPath: '',
     autoplayNext: true,
     closeToTray: true,
-    notifyOnDownload: true
+    notifyOnDownload: true,
+    upscaler: 'off'
   }
 }
 

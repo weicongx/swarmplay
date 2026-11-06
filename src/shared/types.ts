@@ -160,7 +160,14 @@ export interface Settings {
   closeToTray: boolean
   /** Show a Windows notification when an episode finishes downloading */
   notifyOnDownload: boolean
+  upscaler: Upscaler
 }
+
+/**
+ * Real-time upscaling in mpv. `anime4k` runs Anime4K's GPU shaders (made for
+ * anime line art); `rtx` uses NVIDIA's RTX Video Super Resolution in the driver.
+ */
+export type Upscaler = 'off' | 'anime4k' | 'rtx'
 
 export interface AniListMedia {
   id: number
@@ -205,6 +212,7 @@ export interface PlayerState {
   subTracks: PlayerTrack[]
   hasNext: boolean
   fullscreen: boolean
+  upscaler: Upscaler
   error: string | null
 }
 
@@ -220,6 +228,8 @@ export type PlayerCommand =
   | { type: 'next' }
   | { type: 'close' }
   | { type: 'fullscreen'; on?: boolean }
+  /** Also saved as the default for future episodes */
+  | { type: 'upscaler'; mode: Upscaler }
 
 /** Where the video should appear, in CSS pixels relative to the page. */
 export interface VideoRect {
@@ -232,6 +242,8 @@ export interface VideoRect {
 export interface PlayerInfo {
   /** The mpv.exe that will be used, or null if none was found */
   mpvPath: string | null
+  /** An NVIDIA GPU is present, so RTX Video Super Resolution may be available */
+  nvidia: boolean
 }
 
 export const VIDEO_EXT = /\.(mkv|mp4|avi|webm|m4v|mov|ts|wmv)$/i

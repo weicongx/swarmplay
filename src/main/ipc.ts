@@ -11,7 +11,7 @@ import {
   resumeTorrent,
   showTorrentInFolder
 } from './torrent'
-import { findMpv, getPlayerState, play, playerCommand, setVideoBounds, setWatched } from './player'
+import { findMpv, getPlayerState, hasNvidiaGpu, play, playerCommand, setVideoBounds, setWatched } from './player'
 import {
   createFolder,
   deleteFolder,
@@ -76,7 +76,7 @@ export function registerIpc(): void {
   ipcMain.handle('player:setWatched', (_e, torrentId: number, fileIndex: number, watched: boolean) =>
     setWatched(torrentId, fileIndex, watched === true)
   )
-  ipcMain.handle('player:info', () => ({ mpvPath: findMpv() }))
+  ipcMain.handle('player:info', async () => ({ mpvPath: findMpv(), nvidia: await hasNvidiaGpu() }))
   ipcMain.handle('dialog:pickMpv', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const result = await dialog.showOpenDialog(win!, {

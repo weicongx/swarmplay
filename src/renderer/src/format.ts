@@ -1,3 +1,21 @@
+import type { Upscaler } from '@shared/types'
+
+export const UPSCALERS: { id: Upscaler; short: string; label: string; note: string }[] = [
+  { id: 'off', short: 'Off', label: 'Off', note: 'Plays the video as released.' },
+  {
+    id: 'anime4k',
+    short: 'Anime4K',
+    label: 'Anime4K',
+    note: 'GPU shaders made for anime line art: crisper lines, works on any recent GPU. Some find it over-sharpened.'
+  },
+  {
+    id: 'rtx',
+    short: 'RTX',
+    label: 'RTX Video Super Resolution',
+    note: 'NVIDIA’s AI upscaler, natural-looking and cheap to run. Turn on "RTX Video Enhancement → Super Resolution" in the NVIDIA App, or the driver falls back to plain scaling.'
+  }
+]
+
 export function formatBytes(bytes: number): string {
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let i = 0

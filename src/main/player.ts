@@ -2,9 +2,16 @@ import { spawn, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { connect, type Socket } from 'net'
 import { join } from 'path'
-import { BrowserWindow } from 'electron'
-import { RESUME_MIN_SEC, type PlayerCommand, type PlayerState, type PlayerTrack, type VideoRect } from '@shared/types'
-import { getDb, getSettings } from './db'
+import { app, BrowserWindow, screen } from 'electron'
+import {
+  RESUME_MIN_SEC,
+  type PlayerCommand,
+  type PlayerState,
+  type PlayerTrack,
+  type Upscaler,
+  type VideoRect
+} from '@shared/types'
+import { getDb, getSettings, setSettings } from './db'
 import { describeEpisode, nextEpisode } from './library'
 import { preparePlayback, type PlaybackTarget } from './torrent'
 
@@ -18,6 +25,17 @@ const SAVE_EVERY_MS = 5_000
 const BROADCAST_EVERY_MS = 250
 /** Past this fraction of the runtime an episode counts as watched. */
 const WATCHED_AT = 0.9
+
+// Anime4K's recommended high-quality preset ("Mode A") for 1080p and lower sources,
+// in the order its authors specify. The shaders ship in resources/shaders/anime4k.
+const ANIME4K_MODE_A = [
+  'Anime4K_Clamp_Highlights.glsl',
+  'Anime4K_Restore_CNN_VL.glsl',
+  'Anime4K_Upscale_CNN_x2_VL.glsl',
+  'Anime4K_AutoDownscalePre_x2.glsl',
+  'Anime4K_AutoDownscalePre_x4.glsl',
+  'Anime4K_Upscale_CNN_x2_M.glsl'
+]
 
 interface NowPlaying {
   torrentId: number
@@ -35,6 +53,8 @@ let current: NowPlaying | null = null
 let mainWin: BrowserWindow | null = null
 let host: BrowserWindow | null = null
 let videoRect: VideoRect | null = null
+/** Height of the current video in pixels, once mpv reports it */
+let videoHeight: number | null = null
 
 const state: PlayerState = blankState()
 let broadcastTimer: NodeJS.Timeout | null = null
@@ -57,6 +77,7 @@ function blankState(): PlayerState {
     subTracks: [],
     hasNext: false,
     fullscreen: false,
+    upscaler: 'off',
     error: null
   }
 }
@@ -122,9 +143,11 @@ export async function play(torrentId: number, fileIndex: number): Promise<void> 
     buffering: true,
     volume: state.volume,
     muted: state.muted,
+    upscaler: state.upscaler,
     fullscreen: mainWin?.isFullScreen() ?? false,
     hasNext: nextEpisode(torrentId, fileIndex) != null
   })
+  videoHeight = null
   mainWin?.show()
 
   // `start` is a global option, so set it before every load.
@@ -156,7 +179,16 @@ export function playerCommand(cmd: PlayerCommand): void {
       return closePlayer()
     case 'fullscreen':
       return mainWin?.setFullScreen(cmd.on ?? !mainWin.isFullScreen())
+    case 'upscaler':
+      setSettings({ upscaler: cmd.mode })
+      return applyUpscaler(cmd.mode)
   }
+}
+
+/** Whether RTX Video Super Resolution could be available (it needs an NVIDIA GPU). */
+export async function hasNvidiaGpu(): Promise<boolean> {
+  const info = (await app.getGPUInfo('basic')) as { gpuDevice?: { vendorId?: number }[] }
+  return (info.gpuDevice ?? []).some((d) => d.vendorId === 0x10de)
 }
 
 export function getPlayerState(): PlayerState {
@@ -191,8 +223,45 @@ function closePlayer(): void {
   current = null
   command('stop')
   if (mainWin?.isFullScreen()) mainWin.setFullScreen(false)
-  setState({ ...blankState(), volume: state.volume, muted: state.muted })
+  setState({ ...blankState(), volume: state.volume, muted: state.muted, upscaler: state.upscaler })
   placeHost()
+}
+
+/**
+ * Switch upscaling live, without restarting playback. Both methods are cleared
+ * first so only one ever runs.
+ */
+function applyUpscaler(mode: Upscaler): void {
+  command('change-list', 'glsl-shaders', 'clr', '')
+  command('vf', 'remove', '@upscale') // harmless error reply if it isn't there
+
+  if (mode === 'anime4k') {
+    command('set_property', 'hwdec', 'auto-safe')
+    command('change-list', 'glsl-shaders', 'set', ANIME4K_MODE_A.map((f) => join(shaderDir(), f)).join(';'))
+  } else if (mode === 'rtx') {
+    // RTX VSR runs in the driver's D3D11 video processor, so decoded frames must
+    // stay on the GPU as D3D11 textures. Scale to the screen, not a fixed 4K.
+    command('set_property', 'hwdec', 'd3d11va')
+    const scale = rtxScale()
+    if (scale) command('vf', 'add', `@upscale:d3d11vpp=scale=${scale}:scaling-mode=nvidia`)
+  } else {
+    command('set_property', 'hwdec', 'auto-safe')
+  }
+  setState({ upscaler: mode })
+}
+
+/** How much to enlarge the video to fill the screen it's on; null if it already does. */
+function rtxScale(): number | null {
+  if (!mainWin || !videoHeight) return null
+  const display = screen.getDisplayMatching(mainWin.getBounds())
+  const screenHeight = display.size.height * display.scaleFactor
+  const scale = Math.min(4, Math.round((screenHeight / videoHeight) * 100) / 100)
+  return scale > 1.05 ? scale : null
+}
+
+/** mpv is a separate program and can't read inside app.asar, so point it at the unpacked copy. */
+function shaderDir(): string {
+  return join(app.getAppPath(), 'resources', 'shaders', 'anime4k').replace(/app\.asar(?=[\\/])/, 'app.asar.unpacked')
 }
 
 function playNext(onlyIfFinished: boolean): void {
@@ -355,8 +424,9 @@ async function ensureMpv(mpvPath: string): Promise<void> {
   })
   sock.on('error', () => {})
 
-  const observed = ['time-pos', 'duration', 'pause', 'volume', 'mute', 'track-list', 'paused-for-cache']
+  const observed = ['time-pos', 'duration', 'pause', 'volume', 'mute', 'track-list', 'paused-for-cache', 'height']
   observed.forEach((name, i) => command('observe_property', i + 1, name))
+  applyUpscaler(getSettings().upscaler)
 }
 
 async function connectWithRetry(): Promise<Socket> {
@@ -429,6 +499,13 @@ function onMessage(msg: MpvMessage): void {
         break
       case 'mute':
         setState({ muted: msg.data === true })
+        break
+      case 'height':
+        // RTX scaling depends on the video's size, so redo it when a new one loads.
+        if (typeof msg.data === 'number' && msg.data !== videoHeight) {
+          videoHeight = msg.data
+          if (state.upscaler === 'rtx') applyUpscaler('rtx')
+        }
         break
       case 'track-list': {
         const tracks = (Array.isArray(msg.data) ? msg.data : []) as MpvTrack[]

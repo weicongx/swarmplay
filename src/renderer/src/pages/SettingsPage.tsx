@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings } from '@shared/types'
+import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings, type Upscaler } from '@shared/types'
+import { UPSCALERS } from '../format'
 
 export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -62,6 +63,21 @@ export default function SettingsPage(): JSX.Element {
             : player.mpvPath
               ? `Using ${player.mpvPath}`
               : 'mpv not found. Install it with "winget install shinchiro.mpv" or choose mpv.exe.'}
+        </small>
+      </label>
+
+      <label>
+        <span>Upscaling</span>
+        <select value={settings.upscaler} onChange={(e) => update({ upscaler: e.target.value as Upscaler })}>
+          {UPSCALERS.filter((u) => u.id !== 'rtx' || player?.nvidia || settings.upscaler === 'rtx').map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.label}
+            </option>
+          ))}
+        </select>
+        <small className="muted">
+          {UPSCALERS.find((u) => u.id === settings.upscaler)?.note} Sharpens the picture to fit your screen while it
+          plays; it can't add detail that isn't in the release. Press U in the player to compare.
         </small>
       </label>
 
