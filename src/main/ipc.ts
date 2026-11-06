@@ -10,7 +10,9 @@ import {
   pauseTorrent,
   removeDownload,
   resumeTorrent,
-  showTorrentInFolder
+  showTorrentInFolder,
+  streamCacheSize,
+  trimStreamCache
 } from './torrent'
 import {
   closeIfPlaying,
@@ -38,6 +40,7 @@ import {
   suggestFolder
 } from './library'
 import { searchAniList } from './anilist'
+import { tryAnotherRelease } from './alternatives'
 import { checkFollow, downloadRelease, followSeries, streamRelease, unfollow } from './follows'
 
 export function registerIpc(): void {
@@ -56,6 +59,7 @@ export function registerIpc(): void {
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     const settings = setSettings(patch)
     applyLimits()
+    if ('streamCacheGB' in patch) void trimStreamCache()
     return settings
   })
 
@@ -68,10 +72,12 @@ export function registerIpc(): void {
     return removeDownload(id, deleteFiles === true)
   })
   ipcMain.handle('torrents:showInFolder', (_e, id: number) => showTorrentInFolder(id))
+  ipcMain.handle('torrents:streamCacheSize', () => streamCacheSize())
 
   ipcMain.handle('player:play', (_e, torrentId: number, fileIndex: number) => play(torrentId, fileIndex))
   ipcMain.handle('player:command', (_e, cmd: PlayerCommand) => playerCommand(cmd))
   ipcMain.handle('player:getState', () => getPlayerState())
+  ipcMain.handle('player:tryAnother', () => tryAnotherRelease())
   ipcMain.on('player:bounds', (_e, rect: VideoRect | null) => setVideoBounds(rect))
   ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
     const { id } = await addStream(req, await resolveFolder(req.folder))

@@ -25,6 +25,8 @@ const api: AppApi = {
     ipcRenderer.on('player:state', listener)
     return () => ipcRenderer.removeListener('player:state', listener)
   },
+  tryAnotherRelease: () => ipcRenderer.invoke('player:tryAnother'),
+  getStreamCacheSize: () => ipcRenderer.invoke('torrents:streamCacheSize'),
   setVideoBounds: (rect) => ipcRenderer.send('player:bounds', rect),
   streamNow: (req, fileIndex) => ipcRenderer.invoke('player:streamNow', req, fileIndex),
   setWatched: (torrentId, fileIndex, watched) =>

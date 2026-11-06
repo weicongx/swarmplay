@@ -114,6 +114,10 @@ const MIGRATIONS: string[] = [
   `
   -- An episode of a followed series the user removed from the library.
   ALTER TABLE releases ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0;
+  `,
+  `
+  -- Seeders as of the last follow check, to warn before streaming a dead upload. NULL: unknown.
+  ALTER TABLE releases ADD COLUMN seeders INTEGER;
   `
 ]
 
@@ -153,7 +157,9 @@ function defaultSettings(): Settings {
     closeToTray: true,
     notifyOnDownload: true,
     notifyNewEpisodes: true,
-    upscaler: 'off'
+    upscaler: 'off',
+    autoSkip: 'off',
+    streamCacheGB: 0
   }
 }
 

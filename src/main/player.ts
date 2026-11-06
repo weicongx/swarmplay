@@ -13,7 +13,7 @@ import {
 } from '@shared/types'
 import { getDb, getSettings, setSettings } from './db'
 import { addRelease, describeEpisode, nextEpisode } from './library'
-import { endStream, preparePlayback, type PlaybackTarget } from './torrent'
+import { endStream, fetchedRanges, prefetch, preparePlayback, streamStats, type PlaybackTarget } from './torrent'
 
 // One mpv instance is reused for every episode, driven over its JSON IPC pipe.
 // It renders into a frameless child window ("host") kept on top of the video
@@ -25,6 +25,17 @@ const SAVE_EVERY_MS = 5_000
 const BROADCAST_EVERY_MS = 250
 /** Past this fraction of the runtime an episode counts as watched. */
 const WATCHED_AT = 0.9
+/** Past this fraction of the runtime, or once the ending starts, the next episode starts loading... */
+const PREFETCH_AT = 0.85
+/** ...as long as this much of the current one is buffered, so the two don't compete. */
+const PREFETCH_BUFFERED_SEC = 30
+
+// Chapter names releases use for the opening and the ending.
+const OPENING_CHAPTER = /\b(op|opening|intro)\b/i
+const ENDING_CHAPTER = /\b(ed|ending|credits|outro)\b/i
+
+/** Longer than this, a chapter named like an opening is more likely a cold open or the episode itself. */
+const SKIPPABLE_SEC = 200
 
 // Anime4K's recommended high-quality preset ("Mode A") for 1080p and lower sources,
 // in the order its authors specify. The shaders ship in resources/shaders/anime4k.
@@ -45,7 +56,30 @@ interface NowPlaying {
   pos: number
   duration: number | null
   lastSaved: number
+  /** Playing a complete file from disk, so there's nothing to buffer */
+  local: boolean
+  /** The next episode has started loading */
+  aheadStarted: boolean
 }
+
+interface Chapter {
+  title: string
+  time: number
+}
+
+/** mpv's read-ahead for the current file: buffered up to `end` seconds, or to the end of the file. */
+let cache = { end: 0, eof: false }
+let chapters: Chapter[] = []
+/** Chapters already offered for skipping (or skipped), so each is handled once per episode. */
+let skipOffered = new Set<number>()
+/** mpv isn't advancing playback: paused, seeking, or waiting for data. */
+let coreIdle = true
+
+/** Buffering this long, or this long without peers, suggests trying another release. */
+const SLOW_AFTER_MS = 15_000
+let statsTimer: NodeJS.Timeout | null = null
+let bufferingSince: number | null = null
+let noPeersSince: number | null = null
 
 let proc: ChildProcess | null = null
 let sock: Socket | null = null
@@ -71,6 +105,12 @@ function blankState(): PlayerState {
     duration: null,
     paused: false,
     buffering: false,
+    downloadSpeed: 0,
+    numPeers: 0,
+    slow: false,
+    skip: null,
+    local: false,
+    fetched: [],
     volume: 100,
     muted: false,
     audioTracks: [],
@@ -119,7 +159,8 @@ export function findMpv(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null
 }
 
-export async function play(torrentId: number, fileIndex: number): Promise<void> {
+/** `startAt` overrides where playback would resume, e.g. when switching releases mid-episode. */
+export async function play(torrentId: number, fileIndex: number, startAt?: number): Promise<void> {
   const mpv = findMpv()
   if (!mpv) {
     throw new Error(
@@ -130,11 +171,28 @@ export async function play(torrentId: number, fileIndex: number): Promise<void> 
   }
 
   const target = await preparePlayback(torrentId, fileIndex)
-  const start = rememberEpisode(torrentId, fileIndex, target)
+  const resumeAt = rememberEpisode(torrentId, fileIndex, target)
+  const start = startAt != null ? Math.max(0, Math.floor(startAt)) : resumeAt
 
   saveCurrent()
   await ensureMpv(mpv)
-  current = { torrentId, fileIndex, loaded: false, pos: start, duration: null, lastSaved: Date.now() }
+  current = {
+    torrentId,
+    fileIndex,
+    loaded: false,
+    pos: start,
+    duration: null,
+    lastSaved: Date.now(),
+    local: target.source === target.localPath,
+    aheadStarted: false
+  }
+  cache = { end: 0, eof: false }
+  chapters = []
+  coreIdle = true
+  skipOffered = new Set()
+  bufferingSince = null
+  noPeersSince = null
+  statsTimer ??= setInterval(pollStats, 1000)
 
   const ep = describeEpisode(torrentId, fileIndex)
   setState({
@@ -147,6 +205,8 @@ export async function play(torrentId: number, fileIndex: number): Promise<void> 
     episodeLabel: ep.label,
     timePos: start,
     buffering: true,
+    local: current.local,
+    fetched: current.local ? [[0, 1]] : [],
     volume: state.volume,
     muted: state.muted,
     upscaler: state.upscaler,
@@ -181,6 +241,8 @@ export function playerCommand(cmd: PlayerCommand): void {
       return command('set_property', 'sid', cmd.id ?? 'no')
     case 'next':
       return playNext(false)
+    case 'skip-chapter':
+      return skipChapter()
     case 'close':
       return closePlayer()
     case 'fullscreen':
@@ -297,6 +359,97 @@ function playNext(onlyIfFinished: boolean): void {
         }))
       : play(next.torrentId, next.fileIndex)
   go.catch((err) => setState({ buffering: false, error: `Couldn't play the next episode: ${err.message}` }))
+}
+
+/** Once a second: the torrent's speed and peers, and whether the stream looks stuck. */
+function pollStats(): void {
+  const c = current
+  if (!c || !state.open) return
+  const now = Date.now()
+  const s = c.local ? { downloadSpeed: 0, numPeers: 0, complete: true } : streamStats(c.torrentId, c.fileIndex)
+  bufferingSince = state.buffering && !state.error ? (bufferingSince ?? now) : null
+  noPeersSince = s.numPeers === 0 && !s.complete && !cache.eof ? (noPeersSince ?? now) : null
+  const stuck = (since: number | null): boolean => since != null && now - since >= SLOW_AFTER_MS
+  setState(
+    {
+      downloadSpeed: s.downloadSpeed,
+      numPeers: s.numPeers,
+      slow: !c.local && (stuck(bufferingSince) || stuck(noPeersSince)),
+      fetched: c.local ? [[0, 1]] : fetchedRanges(c.torrentId, c.fileIndex)
+    },
+    false
+  )
+  // Fullscreen may have hidden the bars, so say it over the video too.
+  if (state.fullscreen && !c.local && bufferingSince != null && now - bufferingSince >= 1000) {
+    const peers = `${s.numPeers} peer${s.numPeers === 1 ? '' : 's'}`
+    command('show-text', `Buffering… ↓ ${(s.downloadSpeed / 1048576).toFixed(1)} MiB/s · ${peers}`, 1500)
+  }
+}
+
+/** Index of the chapter playing at `pos`, or -1 before the first one. */
+/** The opening or ending chapter at index `i`, if it's short enough to be one. */
+function skippable(i: number): PlayerState['skip'] {
+  const c = chapters[i]
+  if (!c) return null
+  const kind = OPENING_CHAPTER.test(c.title) ? 'opening' : ENDING_CHAPTER.test(c.title) ? 'ending' : null
+  const to = chapters[i + 1]?.time ?? null
+  const end = to ?? current?.duration ?? null
+  if (!kind || end == null || end - c.time > SKIPPABLE_SEC) return null
+  return { kind, to }
+}
+
+/** Offer to skip the chapter playing now, or skip it right away if the settings say so. */
+function updateSkip(pos: number): void {
+  const i = chapterAt(pos)
+  const skip = skippable(i)
+  if (skip?.kind !== state.skip?.kind || skip?.to !== state.skip?.to) setState({ skip })
+  if (!skip || skipOffered.has(i)) return
+  skipOffered.add(i)
+  const { autoSkip } = getSettings()
+  if (autoSkip === 'both' || (autoSkip === 'openings' && skip.kind === 'opening')) {
+    skipChapter()
+    command('show-text', `Skipped the ${skip.kind}`, 2000)
+  } else if (state.fullscreen) {
+    command('show-text', `${skip.kind === 'opening' ? 'Opening' : 'Ending'} · press S to skip`, 4000)
+  }
+}
+
+/** To the next chapter; an ending with nothing after it skips to the end, which plays the next episode. */
+function skipChapter(): void {
+  const skip = state.skip
+  if (!skip) return
+  if (skip.to != null) command('seek', skip.to, 'absolute')
+  else command('seek', 100, 'absolute-percent')
+}
+
+function chapterAt(pos: number): number {
+  let i = -1
+  while (i + 1 < chapters.length && chapters[i + 1].time <= pos + 0.25) i++
+  return i
+}
+
+/**
+ * Near the end of an episode, start fetching the next one so autoplay (or
+ * Next) starts at once. Waits until the current one is well buffered, so it
+ * never takes bandwidth the playing episode still needs.
+ */
+function maybePrefetch(): void {
+  const c = current
+  if (!c?.loaded || c.aheadStarted || !c.duration) return
+  const inEnding = ENDING_CHAPTER.test(chapters[chapterAt(c.pos)]?.title ?? '')
+  if (c.pos < c.duration * PREFETCH_AT && !inEnding) return
+  if (!c.local && !cache.eof && cache.end - c.pos < PREFETCH_BUFFERED_SEC) return
+  c.aheadStarted = true
+
+  const next = nextEpisode(c.torrentId, c.fileIndex)
+  if (!next) return
+  // A followed series' episode not in the library yet is added to stream first.
+  const target = 'releaseId' in next ? addRelease(next.releaseId, false) : Promise.resolve(next)
+  target
+    .then(({ torrentId, fileIndex }) => {
+      if (current === c && fileIndex != null) return prefetch(torrentId, fileIndex)
+    })
+    .catch((err) => console.error('Failed to load the next episode early:', err))
 }
 
 function setState(patch: Partial<PlayerState>, immediate = true): void {
@@ -447,7 +600,18 @@ async function ensureMpv(mpvPath: string): Promise<void> {
   })
   sock.on('error', () => {})
 
-  const observed = ['time-pos', 'duration', 'pause', 'volume', 'mute', 'track-list', 'paused-for-cache', 'height']
+  const observed = [
+    'time-pos',
+    'duration',
+    'pause',
+    'volume',
+    'mute',
+    'track-list',
+    'core-idle',
+    'height',
+    'demuxer-cache-state',
+    'chapter-list'
+  ]
   observed.forEach((name, i) => command('observe_property', i + 1, name))
   applyUpscaler(getSettings().upscaler)
 }
@@ -489,12 +653,21 @@ interface MpvTrack {
   selected?: boolean
 }
 
+/**
+ * Waiting for data, once the file is open. paused-for-cache alone misses the wait
+ * for the first frames (and after a seek), which is when a dead upload shows.
+ */
+function updateBuffering(): void {
+  if (current?.loaded) setState({ buffering: coreIdle && !state.paused })
+}
+
 function onMessage(msg: MpvMessage): void {
   if (!current) return
 
   if (msg.event === 'file-loaded') {
     current.loaded = true
-    setState({ buffering: false, error: null })
+    setState({ error: null })
+    updateBuffering()
   } else if (msg.event === 'property-change') {
     switch (msg.name) {
       // duration can be reported just before file-loaded, and only changes once per file.
@@ -509,13 +682,28 @@ function onMessage(msg: MpvMessage): void {
           current.pos = msg.data
           setState({ timePos: msg.data }, false)
           if (Date.now() - current.lastSaved > SAVE_EVERY_MS) saveCurrent()
+          maybePrefetch()
+          updateSkip(msg.data)
         }
+        break
+      case 'demuxer-cache-state': {
+        const s = (msg.data ?? {}) as { 'cache-end'?: number; 'eof-cached'?: boolean }
+        cache = { end: typeof s['cache-end'] === 'number' ? s['cache-end'] : 0, eof: s['eof-cached'] === true }
+        break
+      }
+      case 'chapter-list':
+        chapters = (Array.isArray(msg.data) ? (msg.data as { title?: string; time?: number }[]) : [])
+          .filter((c) => typeof c.time === 'number')
+          .map((c) => ({ title: c.title ?? '', time: c.time! }))
+        updateSkip(current.pos)
         break
       case 'pause':
         setState({ paused: msg.data === true })
+        updateBuffering()
         break
-      case 'paused-for-cache':
-        setState({ buffering: msg.data === true })
+      case 'core-idle':
+        coreIdle = msg.data === true
+        updateBuffering()
         break
       case 'volume':
         if (typeof msg.data === 'number') setState({ volume: msg.data })

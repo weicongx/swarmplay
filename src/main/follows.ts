@@ -142,7 +142,10 @@ async function check(f: FollowRow): Promise<number[]> {
   }
 }
 
-/** Store a release as its episode's upload, unless a newer one is stored. True if the episode is new. */
+/**
+ * Store a release as its episode's upload, unless a newer one is stored, and refresh
+ * the stored one's seeder count. True if the episode is new.
+ */
 function saveRelease(followId: number, res: NyaaResult, episode: number): boolean {
   const db = getDb()
   const published = Date.parse(res.pubDate)
@@ -151,15 +154,17 @@ function saveRelease(followId: number, res: NyaaResult, episode: number): boolea
     .get(followId, episode) as unknown as ReleaseRow | undefined
   if (!existing) {
     db.prepare(
-      `INSERT INTO releases (follow_id, episode_num, nyaa_id, title, torrent_url, info_hash, size_bytes, published_at, added_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(followId, episode, res.id, res.title, res.torrentUrl, res.infoHash, res.sizeBytes, published, Date.now())
+      `INSERT INTO releases (follow_id, episode_num, nyaa_id, title, torrent_url, info_hash, size_bytes, published_at, added_at, seeders)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(followId, episode, res.id, res.title, res.torrentUrl, res.infoHash, res.sizeBytes, published, Date.now(), res.seeders)
     return true
   }
   if (published > existing.published_at && res.id !== existing.nyaa_id) {
     db.prepare(
-      'UPDATE releases SET nyaa_id = ?, title = ?, torrent_url = ?, info_hash = ?, size_bytes = ?, published_at = ? WHERE id = ?'
-    ).run(res.id, res.title, res.torrentUrl, res.infoHash, res.sizeBytes, published, existing.id)
+      'UPDATE releases SET nyaa_id = ?, title = ?, torrent_url = ?, info_hash = ?, size_bytes = ?, published_at = ?, seeders = ? WHERE id = ?'
+    ).run(res.id, res.title, res.torrentUrl, res.infoHash, res.sizeBytes, published, res.seeders, existing.id)
+  } else if (res.id === existing.nyaa_id) {
+    db.prepare('UPDATE releases SET seeders = ? WHERE id = ?').run(res.seeders, existing.id)
   }
   return false
 }

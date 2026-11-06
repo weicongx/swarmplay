@@ -27,6 +27,13 @@ export function formatBytes(bytes: number): string {
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
+/** At or under this many seeders, a stream is likely to stall. */
+export const FEW_SEEDERS = 2
+
+export function seedersLabel(n: number): string {
+  return `${n} seeder${n === 1 ? '' : 's'}`
+}
+
 export function formatSpeed(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`
 }

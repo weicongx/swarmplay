@@ -5,10 +5,14 @@ A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a 
 ## Features
 
 - **Search nyaa.si** by category and filter (trusted only, no remakes) and sort by seeders, size or date. Open any result to see its file list before downloading.
-- **Streaming first.** Press **Stream** to play an episode within seconds. WebTorrent fetches the pieces near the playhead first. Nothing is kept: the data goes to a hidden temporary folder that's deleted when playback stops. The episode stays in the library so you can stream it again.
+- **Streaming first.** Press **Stream** to play an episode within seconds. WebTorrent fetches the pieces near the playhead first. Nothing is kept: the data goes to a hidden temporary folder that's deleted when playback stops. The episode stays in the library so you can stream it again. If you rewatch a lot, Settings can keep recently streamed episodes up to a size you choose, so they replay without peers. This is off by default.
 - **Download only what you want to keep.** Press **Download** in Search, or on any library episode, even mid-stream. An episode streamed and then downloaded keeps what's already fetched.
-- **In-app player.** mpv draws the video inside the app window, with Swarmplay's own controls: seek bar, volume, audio and subtitle tracks, and fullscreen.
+- **In-app player.** mpv draws the video inside the app window, with Swarmplay's own controls: seek bar, volume, audio and subtitle tracks, and fullscreen. **Now streaming** at the foot of the sidebar shows the episode, download speed and peers. While streaming, the seek bar shades the parts already fetched, which play without waiting. When it buffers, the player shows the download speed and peer count.
 - **Resume and autoplay.** Your position saves every few seconds. An episode counts as watched at 90%, and the next one in the folder starts automatically, including new episodes of a followed series you haven't streamed yet.
+- **Skip intro and credits.** When a release names its chapters (OP, Opening, ED, Ending and similar), the player shows **Skip intro** during the opening and **Skip credits** during the ending. Settings can skip openings, or both, automatically.
+- **Next episode loads early.** Near the end of an episode, Swarmplay starts fetching the start of the next one, so autoplay (or **Next**) begins at once instead of waiting for peers. If you stop watching instead, that data is deleted like any stream.
+- **Seeders before you press play.** Search results and a followed series' new episodes show how many people are seeding each upload. With two or fewer, the count turns amber and Search warns that streaming may stall.
+- **Switch to a faster upload.** If a stream is stuck buffering or has no peers for 15 seconds, the player offers **Try another**. It finds the best-seeded other upload of the same episode on nyaa, from any group, and carries on from the same moment. The library episode points at the new upload from then on.
 - **Upscaling.** Two options:
   - Anime4K shaders, which run on any GPU.
   - NVIDIA RTX Video Super Resolution, which needs an RTX card.
@@ -19,7 +23,7 @@ A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a 
   - Folders can be nested and renamed.
   - Episodes move between folders by drag and drop.
   - Each episode has **Delete**. For a downloaded episode, **Delete file** frees the space and keeps the episode to stream, and **Remove from library** takes it out entirely. The series folder stays either way.
-- **Follow a series.** Pick any episode in Search and choose **Add series to library**. Swarmplay finds that group's other uploads of the series (same season and resolution) and lists them in the folder without downloading, each with **Stream** and **Download**. It checks nyaa every 30 minutes and adds new episodes as they come out, with a notification.
+- **Follow a series.** Pick any episode in Search and choose **Add series to library**. Swarmplay finds that group's other uploads of the series (same season and resolution) and lists them in the folder without downloading, each with **Stream** and **Download**. It checks nyaa every 30 minutes and adds new episodes as they come out, with a notification. Each check also refreshes the episodes' seeder counts.
 - **AniList.** Folders link to their AniList entry for the cover, alternate titles and episode count. An English-titled release still finds the folder you named in romaji. *Continue watching* sits at the top of the library.
 - **Background downloads.** Downloads keep going from the tray when you close the window. Swarmplay notifies you when an episode finishes, and seeds afterwards if you want.
 
@@ -60,8 +64,8 @@ npm run dev
 
 1. **Search.** Type a show name. Click a result to open its details, tick the episodes you want, and pick a library folder (one is suggested from the release name).
 2. **Stream** plays the first ticked episode right away and adds the episodes to the library without saving them. **Download** saves the files in the background.
-3. **Downloads** shows progress, speed and peers for each download, with pause, resume and remove. Remove keeps the episodes in the library to stream, and can also delete the files. While you stream, the stream shows here too.
-4. **Add series to library** (in the same panel) follows the series instead of picking one episode. Its new episodes show up in the folder with **Stream** and **Download**, and **Remove** hides one you don't want. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
+3. **Downloads** shows progress, speed and peers for each download, with pause, resume and remove. Remove keeps the episodes in the library to stream, and can also delete the files. While you stream, the stream shows here too. The badge on **Downloads** counts only downloads still fetching, so streaming never adds to it.
+4. **Add series to library** (in the same panel) follows the series instead of picking one episode. Its new episodes show up in the folder with **Stream** and **Download**, and **Remove** hides one you don't want. Each one shows its seeders as of the last check, with ⚠ at two or fewer. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
 5. **Library** holds your series folders. Click an episode to play it. Each episode shows whether it's downloaded, with **Download** and **Delete**. Use **Find on AniList** when a folder didn't get a cover automatically.
 
 ### Player keys
@@ -74,6 +78,7 @@ npm run dev
 | M | Mute |
 | F / double-click | Fullscreen |
 | N | Next episode |
+| S | Skip the opening or ending |
 | U | Cycle upscaling (off → Anime4K → RTX) |
 | Esc | Leave fullscreen, then close the player |
 
@@ -84,6 +89,8 @@ npm run dev
 - Download and upload speed limits
 - Whether to seed after downloading
 - Autoplay next episode
+- Keep recently streamed episodes, up to a number of GB (off by default)
+- Openings and endings: a Skip button, or skip automatically
 - Close to tray
 - Download notifications
 - Upscaling mode
@@ -114,6 +121,11 @@ nyaa.si RSS ──► search results ──► .torrent ──► WebTorrent ─
   - The server only answers requests that carry no browser `Origin`, so web pages can't read from it.
   - Files that are already complete play straight from disk.
   - A stream-only torrent saves into `<library>\.swarmplay-streaming\<infoHash>`, a hidden folder on the same drive as the library. When playback stops (or another episode starts) the torrent is stopped and that folder is deleted. Downloading an episode mid-stream keeps the data. When playback stops, the file is moved (a rename, since it's the same drive) into the series folder. Leftover stream folders are cleared at startup.
+  - With the stream cache on, a stream's folder stays when playback stops, and its time is marked as last used. Streaming it again re-checks the pieces on disk and plays them without peers. The cache is then trimmed, oldest first, to the limit. The folder playing or fetched ahead counts toward the limit but is never deleted. Sizes are file sizes, not bytes fetched: once mpv has read the end of an mkv (its seek index), Windows allocates the whole file. Folders left at startup, including ones no torrent uses anymore, stay until they're the oldest. Turning the limit down trims at once, and turning the cache off clears it. Removing an episode from the library still deletes its stream folder.
+  - Once a second the player reads which of the file's pieces WebTorrent has and shades them on the seek bar. Byte positions are mapped to time in proportion, so the shading is close but not exact for variable-bitrate video. While buffering, the top bar shows the torrent's download speed and peer count, and in fullscreen the bars stay up until playback resumes.
+  - Skipping uses mpv's `chapter-list`. A chapter whose title has OP, Opening or Intro (or ED, Ending, Credits or Outro) as a word counts, if it's no longer than 200 seconds. A longer one is more likely a cold open or the episode itself. Skipping seeks to the next chapter's start. An ending that's the last chapter skips to the end of the file, so autoplay moves on. Auto-skip handles each chapter once per episode, so seeking back into an opening plays it. In fullscreen, where the bars may be hidden, mpv's on-screen text says when you can press S, and also shows the buffering speed and peers.
+  - At 85% of an episode, or when a chapter named ED, Ending or Credits starts, the next episode is prefetched: its first 40 MB and last 2 MB (where an mkv keeps its seek index). A followed series' next episode is added to the library first. Prefetching waits until mpv has at least 30 seconds buffered, and it adds no stream selection of its own, so it only gets bandwidth the playing file doesn't need. Playing into it takes over its torrent. Closing the player or playing something else stops it and deletes what it fetched.
+  - A stream counts as slow after 15 seconds of buffering (mpv's `core-idle` while not paused), or 15 seconds with no peers before the file is fully cached. **Try another** then searches nyaa under the release's series name and the folder's AniList titles (up to three queries) and keeps results for the same episode number and season. It doesn't offer one that has no seeders, or a dub-only upload in place of a subbed one. It picks the result with the most seeders, preferring the current resolution between equals. The new upload is streamed into the same folder, starting at the same position. It takes over the episode's watched state and the followed series' release entry. If the old upload was only streamed, its torrent and data are removed.
 - **Pause.** Pausing removes the torrent from the WebTorrent client entirely, because WebTorrent's own pause only stops new connections. Resuming re-adds the torrent and re-checks the pieces already on disk.
 - **Player.**
   - One long-lived mpv process (`--idle`) is controlled over a named pipe. It renders with `--wid` into a borderless child window that the main process keeps positioned over the player page's video area. The page draws the controls on top.
@@ -123,6 +135,7 @@ nyaa.si RSS ──► search results ──► .torrent ──► WebTorrent ─
   - Release names are parsed with [anitomy](https://www.npmjs.com/package/anitomy). Folder matching ignores case and punctuation.
   - AniList auto-linking only accepts an exact title match for the same season, preferring the TV series over spin-offs. Anything less certain is left for you to pick.
   - AniList responses are cached for a week, and requests are throttled under its limit of 30 per minute.
+  - A followed series' episodes keep the seeder count from nyaa's RSS feed (`nyaa:seeders`) as of the last check. That's the only count there is before a torrent starts, so it can be up to 30 minutes old.
   - Moving episodes between folders changes the library only, not the files on disk, because one batch torrent can feed several folders.
 - **Storage.** Settings, the library, torrents, per-file progress and watch positions are stored in SQLite at `%APPDATA%\Swarmplay\swarmplay.db`, using Electron's built-in `node:sqlite`.
 
@@ -139,6 +152,7 @@ src/
     player.ts        embedded mpv: window, IPC, resume, upscaling
     library.ts       folders, episodes, auto-filing, next episode
     follows.ts       followed series: matching uploads, 30-minute checks
+    alternatives.ts  switching a slow stream to another upload of the episode
     release.ts       release-name parsing (anitomy)
     anilist.ts       AniList GraphQL search, cache, throttling
     tray.ts          tray icon and menu

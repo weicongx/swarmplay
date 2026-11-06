@@ -19,7 +19,7 @@ import {
   type LibraryData,
   type TorrentStatusInfo
 } from '@shared/types'
-import { errorMessage, formatAge, formatBytes, formatClock } from '../format'
+import { errorMessage, FEW_SEEDERS, formatAge, formatBytes, formatClock, seedersLabel } from '../format'
 
 /** null = the library root; 'unsorted' = episodes without a folder */
 type Location = number | null | 'unsorted'
@@ -833,6 +833,19 @@ function ReleaseRow({ a, run }: { a: AvailableEpisode; run: (fn: () => Promise<u
         <span className="ep-state">
           <span className="muted">New · {formatAge(new Date(a.publishedAt).toISOString())}</span>
           <span className="muted">{formatBytes(a.sizeBytes)}</span>
+          {a.seeders != null && (
+            <span
+              className={a.seeders <= FEW_SEEDERS ? 'seeders few' : 'muted'}
+              title={
+                a.seeders <= FEW_SEEDERS
+                  ? 'Few people are sharing this upload, so streaming may stall. As of the last check.'
+                  : 'As of the last check'
+              }
+            >
+              {a.seeders <= FEW_SEEDERS && '⚠ '}
+              {seedersLabel(a.seeders)}
+            </span>
+          )}
           <button className="link" onClick={() => run(() => window.api.downloadRelease(a.id))}>
             Download
           </button>

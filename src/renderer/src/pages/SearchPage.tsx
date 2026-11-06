@@ -10,7 +10,7 @@ import {
   type NyaaResult,
   type TorrentInfo
 } from '@shared/types'
-import { displayPath, errorMessage, formatAge, formatBytes, magnetFor } from '../format'
+import { displayPath, errorMessage, FEW_SEEDERS, formatAge, formatBytes, magnetFor, seedersLabel } from '../format'
 
 type SortKey = 'date' | 'seeders' | 'size' | 'downloads'
 
@@ -158,7 +158,12 @@ export default function SearchPage({
                     <td className="title">{r.title}</td>
                     <td className="num">{r.size}</td>
                     <td className="num">{formatAge(r.pubDate)}</td>
-                    <td className="num seeders">{r.seeders}</td>
+                    <td
+                      className={`num seeders ${r.seeders <= FEW_SEEDERS ? 'few' : ''}`}
+                      title={r.seeders <= FEW_SEEDERS ? 'Few seeders: streaming may stall' : undefined}
+                    >
+                      {r.seeders}
+                    </td>
                     <td className="num leechers">{r.leechers}</td>
                     <td className="num">{r.downloads}</td>
                   </tr>
@@ -337,7 +342,7 @@ function DetailPanel({
         <dt>Size</dt>
         <dd>{result.size}</dd>
         <dt>Seeders</dt>
-        <dd className="seeders">{result.seeders}</dd>
+        <dd className={`seeders ${result.seeders <= FEW_SEEDERS ? 'few' : ''}`}>{result.seeders}</dd>
         <dt>Leechers</dt>
         <dd>{result.leechers}</dd>
         <dt>Uploaded</dt>
@@ -401,6 +406,12 @@ function DetailPanel({
           {info && info.files.length > 1 ? `Download ${checked.size} file${checked.size === 1 ? '' : 's'}` : 'Download'}
         </button>
       </div>
+      {result.seeders <= FEW_SEEDERS && (
+        <div className="seed-warning">
+          {result.seeders === 0 ? 'No one is seeding this upload' : `Only ${seedersLabel(result.seeders)}`}, so
+          streaming may stall. Another group's upload of the episode may play more smoothly.
+        </div>
+      )}
       {added && (
         <div className="notice">
           {added}{' '}

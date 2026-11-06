@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, rename, rm, rmdir } from 'fs/promises'
+import { copyFile, mkdir, readdir, rename, rm, rmdir, stat, utimes } from 'fs/promises'
 import { existsSync } from 'fs'
 import { execFile } from 'child_process'
 import { basename, dirname, join, resolve, sep } from 'path'
@@ -19,6 +19,8 @@ import { parseTorrentFile, type ParsedTorrent } from './torrentFile'
 // The webtorrent package ships no types; these cover the parts used here.
 interface WtFile {
   length: number
+  /** Byte offset of the file within the torrent */
+  offset: number
   downloaded: number
   streamURL: string
   select(): void
@@ -27,10 +29,14 @@ interface WtFile {
 interface WtTorrent extends EventEmitter {
   ready: boolean
   files: WtFile[]
+  pieceLength: number
+  bitfield: { get(index: number): boolean }
   downloadSpeed: number
   uploadSpeed: number
   uploaded: number
   numPeers: number
+  select(start: number, end: number, priority?: number): void
+  deselect(start: number, end: number): void
 }
 interface WtServer {
   listen(port: number, host: string, cb: () => void): void
@@ -94,6 +100,15 @@ const entries = new Map<number, Entry>()
 const fileCompleteListeners: ((torrentId: number, fileIndex: number) => void)[] = []
 /** The torrent the player is streaming a not-kept file from */
 let streaming: Entry | null = null
+/**
+ * The episode expected to play next, whose start is fetched ahead of time so
+ * autoplay begins at once. It becomes the stream if playback continues into it;
+ * otherwise its data is deleted like a stream's.
+ */
+let prefetching: { entry: Entry; fileIndex: number } | null = null
+/** How much of the next episode to fetch ahead: its start, and its end (where mkv keeps its seek index). */
+const PREFETCH_HEAD = 40 * 1024 * 1024
+const PREFETCH_TAIL = 2 * 1024 * 1024
 
 /** Called when a selected video finishes downloading while the app is running. */
 export function onFileComplete(cb: (torrentId: number, fileIndex: number) => void): void {
@@ -151,10 +166,10 @@ export async function initTorrents(): Promise<void> {
     entries.set(row.id, entry)
 
     if (selected.size === 0 && row.status !== 'idle') setStatus(entry, 'idle')
-    // Left over from a stream the app quit during: clear it, or move what was kept.
+    // Left over from a stream the app quit during: clear it (unless the stream cache keeps it), or move what was kept.
     if (isStreamDir(row.save_path)) {
       if (selected.size === 0) {
-        await clearStreamDir(entry)
+        if (cacheLimit() === 0) await clearStreamDir(entry)
       } else {
         await moveToLibrary(entry).catch((err) => console.error('Failed to move a download:', err))
       }
@@ -284,6 +299,7 @@ export async function resumeTorrent(id: number): Promise<void> {
 export async function removeTorrent(id: number, deleteFiles: boolean): Promise<void> {
   const entry = mustGet(id)
   if (streaming === entry) streaming = null
+  if (prefetching?.entry === entry) prefetching = null
   await withLock(entry, async () => {
     await stop(entry)
     entries.delete(id)
@@ -323,7 +339,7 @@ export async function removeDownload(id: number, deleteFiles: boolean): Promise<
 export async function pruneStreamTorrents(): Promise<void> {
   const count = getDb().prepare("SELECT COUNT(*) AS n FROM episodes WHERE torrent_id = ? AND title != ''")
   for (const entry of [...entries.values()]) {
-    if (entry.selected.size > 0 || streaming === entry) continue
+    if (entry.selected.size > 0 || streaming === entry || prefetching?.entry === entry) continue
     if ((count.get(entry.row.id) as { n: number }).n === 0) await removeTorrent(entry.row.id, true)
   }
 }
@@ -378,6 +394,9 @@ export async function preparePlayback(torrentId: number, fileIndex: number): Pro
   const file = entry.meta.files[fileIndex]
   if (!file) throw new Error('That file is not in this torrent')
 
+  // Playing the episode fetched ahead takes over its torrent; anything else drops it.
+  if (prefetching?.entry === entry && prefetching.fileIndex === fileIndex) prefetching = null
+  else void cancelPrefetch()
   if (streaming && streaming !== entry) void endStream()
   await entry.lock
 
@@ -417,25 +436,142 @@ export async function preparePlayback(torrentId: number, fileIndex: number): Pro
  */
 export function endStream(): Promise<void> {
   const entry = streaming
-  if (!entry) return Promise.resolve()
   streaming = null
+  // Playback didn't continue into the episode fetched ahead, so it goes too
+  // (with the stream itself when it's another file of the same torrent).
+  let ahead = Promise.resolve()
+  if (entry && prefetching?.entry === entry) prefetching = null
+  else ahead = cancelPrefetch()
+  if (!entry) return ahead
+  return Promise.all([ahead, releaseStream(entry)]).then(() => {})
+}
+
+/**
+ * Fetch the start of the episode expected to play next, behind the current
+ * stream: with no stream selection of its own, it only gets what bandwidth
+ * the playing file leaves. Replaces any earlier prefetch.
+ */
+export async function prefetch(torrentId: number, fileIndex: number): Promise<void> {
+  const entry = mustGet(torrentId)
+  if (!entry.meta.files[fileIndex]) throw new Error('That file is not in this torrent')
+  if (prefetching?.entry === entry && prefetching.fileIndex === fileIndex) return
+  await cancelPrefetch()
+  const kept = entry.selected.has(fileIndex)
+  if (kept && (entry.fileProgress[fileIndex] ?? 0) >= 1) return // it plays from disk
+  await entry.lock
+
+  prefetching = { entry, fileIndex }
+  // Not kept: its data is deleted with the stream's, or when the prefetch is dropped.
+  if (!kept) entry.streamed.add(fileIndex)
+  if (entry.torrent?.ready) selectAhead(entry.torrent, fileIndex)
+  else if (!entry.torrent) {
+    await ensureDir(entry.row.save_path)
+    start(entry) // its ready handler selects the pieces
+  }
+  broadcast()
+}
+
+/** Drop the episode fetched ahead: delete its data unless it's kept or still streaming. */
+function cancelPrefetch(): Promise<void> {
+  const p = prefetching
+  if (!p) return Promise.resolve()
+  prefetching = null
+  const { entry, fileIndex } = p
+  if (entry.selected.has(fileIndex)) return Promise.resolve() // downloading anyway
+  if (streaming === entry) {
+    // Another file of the torrent that's streaming: its data goes when the stream ends.
+    if (entry.torrent?.ready && entry.streamFile !== fileIndex) deselectAhead(entry.torrent, fileIndex)
+    return Promise.resolve()
+  }
+  return releaseStream(entry)
+}
+
+/** Piece ranges for the start and end of a file. */
+function aheadRanges(torrent: WtTorrent, fileIndex: number): [number, number][] {
+  const f = torrent.files[fileIndex]
+  const pl = torrent.pieceLength
+  const last = f.offset + f.length - 1
+  const piece = (byte: number): number => Math.floor(byte / pl)
+  return [
+    [piece(f.offset), piece(Math.min(last, f.offset + PREFETCH_HEAD - 1))],
+    [piece(Math.max(f.offset, last - PREFETCH_TAIL + 1)), piece(last)]
+  ]
+}
+
+function selectAhead(torrent: WtTorrent, fileIndex: number): void {
+  if (torrent.files[fileIndex].length === 0) return
+  for (const [from, to] of aheadRanges(torrent, fileIndex)) torrent.select(from, to, 0)
+}
+
+function deselectAhead(torrent: WtTorrent, fileIndex: number): void {
+  if (torrent.files[fileIndex].length === 0) return
+  for (const [from, to] of aheadRanges(torrent, fileIndex)) torrent.deselect(from, to)
+}
+
+/**
+ * Stop a torrent that was only running to stream (or fetch ahead) and delete
+ * what it fetched that isn't kept. Kept files fetched in the stream folder move
+ * to the library, and a torrent that was downloading or seeding starts again.
+ */
+function releaseStream(entry: Entry): Promise<void> {
   return withLock(entry, async () => {
-    if (streaming === entry || !entries.has(entry.row.id)) return // playing from it again already
+    // Playing from it again already, or about to.
+    if (streaming === entry || prefetching?.entry === entry || !entries.has(entry.row.id)) return
     const streamed = [...entry.streamed]
     entry.streamed.clear()
     entry.streamFile = null
     const resume = entry.row.status === 'downloading' || entry.row.status === 'seeding'
     await stop(entry)
     if (isStreamDir(entry.row.save_path)) {
-      if (entry.selected.size === 0) await clearStreamDir(entry)
-      else await moveToLibrary(entry)
+      if (entry.selected.size > 0) await moveToLibrary(entry)
+      else if (cacheLimit() > 0) await utimes(entry.row.save_path, new Date(), new Date()).catch(() => {})
+      else await clearStreamDir(entry)
     } else {
       await deleteFilesOf(entry, streamed.filter((i) => !entry.selected.has(i)))
     }
     persistProgress(entry)
     if (resume) start(entry)
     broadcast()
-  })
+  }).then(() => trimStreamCache())
+}
+
+/** How the torrent behind a playing file is doing, for the player. */
+export function streamStats(torrentId: number, fileIndex: number): { downloadSpeed: number; numPeers: number; complete: boolean } {
+  const entry = entries.get(torrentId)
+  const t = entry?.torrent?.ready ? entry.torrent : null
+  return {
+    downloadSpeed: t?.downloadSpeed ?? 0,
+    numPeers: t?.numPeers ?? 0,
+    complete: (t ? t.files[fileIndex].downloaded / t.files[fileIndex].length : (entry?.fileProgress[fileIndex] ?? 0)) >= 1
+  }
+}
+
+/** Ranges closer than this (a fraction of the file) are shown as one. */
+const RANGE_GAP = 0.005
+
+/** The parts of a file fetched so far, as [from, to] fractions of its length. */
+export function fetchedRanges(torrentId: number, fileIndex: number): [number, number][] {
+  const entry = entries.get(torrentId)
+  const t = entry?.torrent?.ready ? entry.torrent : null
+  const f = t?.files[fileIndex]
+  if (!t || !f) return (entry?.fileProgress[fileIndex] ?? 0) >= 1 ? [[0, 1]] : []
+  if (f.downloaded >= f.length) return [[0, 1]]
+  const len = t.pieceLength
+  const at = (piece: number): number => Math.min(1, Math.max(0, (piece * len - f.offset) / f.length))
+  const ranges: [number, number][] = []
+  for (let i = Math.floor(f.offset / len); i <= Math.floor((f.offset + f.length - 1) / len); i++) {
+    if (!t.bitfield.get(i)) continue
+    const last = ranges[ranges.length - 1]
+    if (last && at(i) - last[1] < RANGE_GAP) last[1] = at(i + 1)
+    else ranges.push([at(i), at(i + 1)])
+  }
+  return ranges
+}
+
+/** The torrent's name and info-hash. */
+export function torrentIdentity(torrentId: number): { name: string; infoHash: string } {
+  const { row } = mustGet(torrentId)
+  return { name: row.name, infoHash: row.info_hash }
 }
 
 function waitForReady(entry: Entry, timeoutMs = 60_000): Promise<WtTorrent> {
@@ -598,6 +734,7 @@ async function start(entry: Entry): Promise<void> {
   torrent.on('ready', () => {
     for (const i of entry.selected) torrent.files[i].select()
     if (entry.streamFile != null) torrent.files[entry.streamFile].select()
+    if (prefetching?.entry === entry) selectAhead(torrent, prefetching.fileIndex)
   })
   torrent.on('error', (err: Error) => {
     entry.error = err.message
@@ -737,6 +874,7 @@ function statusOf(entry: Entry): TorrentStatusInfo {
     savePath: row.save_path,
     status,
     streaming: isStreaming,
+    aheadFile: prefetching?.entry === entry ? prefetching.fileIndex : null,
     error: entry.error,
     progress: length ? downloaded / length : 0,
     downloaded,
@@ -853,8 +991,9 @@ async function ensureDir(path: string): Promise<void> {
   if (isStreamDir(path)) execFile('attrib', ['+h', dirname(path)], () => {})
 }
 
-/** Stream folders no torrent uses, e.g. after a torrent was removed mid-stream. */
+/** Stream folders no torrent uses, e.g. after a torrent was removed mid-stream. The stream cache keeps them until they're the oldest. */
 async function removeOrphanStreamDirs(): Promise<void> {
+  if (cacheLimit() > 0) return trimStreamCache()
   const root = join(getSettings().libraryRoot, STREAM_DIR)
   const used = new Set([...entries.values()].map((e) => resolve(e.row.save_path).toLowerCase()))
   for (const name of await readdir(root).catch(() => [] as string[])) {
@@ -863,4 +1002,75 @@ async function removeOrphanStreamDirs(): Promise<void> {
       await rm(p, { recursive: true, force: true }).catch(() => {})
     }
   }
+}
+
+// --- Stream cache -------------------------------------------------------------
+
+/** How much recently streamed data to keep for replay, in bytes; 0 deletes each stream when it ends. */
+function cacheLimit(): number {
+  return Math.max(0, getSettings().streamCacheGB) * 1024 ** 3
+}
+
+let trimming: Promise<void> = Promise.resolve()
+
+/**
+ * Delete the least recently streamed folders until the stream folder fits the
+ * cache limit. The folder playing or fetched ahead counts, but is never deleted.
+ */
+export function trimStreamCache(): Promise<void> {
+  trimming = trimming.then(async () => {
+    const limit = cacheLimit()
+    const busy = new Set(
+      [streaming, prefetching?.entry].flatMap((e) => (e ? [resolve(e.row.save_path).toLowerCase()] : []))
+    )
+    const folders = await streamFolders()
+    let total = folders.reduce((n, f) => n + f.bytes, 0)
+    for (const f of folders.sort((a, b) => a.usedAt - b.usedAt)) {
+      if (total <= limit) break
+      const key = resolve(f.path).toLowerCase()
+      if (busy.has(key)) continue
+      const owner = [...entries.values()].find((e) => resolve(e.row.save_path).toLowerCase() === key)
+      if (owner) {
+        await withLock(owner, async () => {
+          // Started again meanwhile, or kept files are still on their way to the library.
+          if (owner.torrent || owner.selected.size > 0) return
+          await clearStreamDir(owner)
+          persistProgress(owner)
+        })
+      } else {
+        await rm(f.path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
+      }
+      total -= f.bytes
+    }
+    broadcast()
+  }).catch((err) => console.error('Failed to trim the stream cache:', err))
+  return trimming
+}
+
+/** Bytes in the stream folder: the cache, plus whatever is streaming now. */
+export async function streamCacheSize(): Promise<number> {
+  return (await streamFolders()).reduce((n, f) => n + f.bytes, 0)
+}
+
+async function streamFolders(): Promise<{ path: string; bytes: number; usedAt: number }[]> {
+  const root = join(getSettings().libraryRoot, STREAM_DIR)
+  const out: { path: string; bytes: number; usedAt: number }[] = []
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    if (!/^[0-9a-f]{40}$/i.test(name)) continue
+    const path = join(root, name)
+    const info = await stat(path).catch(() => null)
+    if (info?.isDirectory()) out.push({ path, bytes: await folderBytes(path), usedAt: info.mtimeMs })
+  }
+  return out
+}
+
+/** File sizes, not what's fetched: a streamed file takes its full size once its end is written. */
+async function folderBytes(dir: string): Promise<number> {
+  let n = 0
+  for (const d of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const p = join(dir, d.name)
+    if (d.isDirectory()) n += await folderBytes(p)
+    else n += (await stat(p).catch(() => null))?.size ?? 0
+  }
+  return n
 }

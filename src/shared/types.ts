@@ -89,6 +89,8 @@ export interface TorrentStatusInfo {
   status: TorrentStatus
   /** The player is streaming a file from it that isn't kept */
   streaming: boolean
+  /** File whose start is being fetched ahead because it plays next, or null */
+  aheadFile: number | null
   error: string | null
   /** 0–1 over the selected files only */
   progress: number
@@ -151,6 +153,8 @@ export interface AvailableEpisode {
   title: string
   sizeBytes: number
   publishedAt: number
+  /** As of the last follow check; null when not known yet */
+  seeders: number | null
 }
 
 /** A series whose new episodes are added to a folder as they're uploaded. */
@@ -205,6 +209,10 @@ export interface Settings {
   /** Show a Windows notification when a followed series gets a new episode */
   notifyNewEpisodes: boolean
   upscaler: Upscaler
+  /** Skip chapters named OP/Opening (and ED/Ending) without asking */
+  autoSkip: 'off' | 'openings' | 'both'
+  /** Keep this many GB of recently streamed episodes for replay; 0 deletes each stream when it ends */
+  streamCacheGB: number
 }
 
 /**
@@ -252,6 +260,17 @@ export interface PlayerState {
   paused: boolean
   /** Waiting for torrent pieces */
   buffering: boolean
+  /** Of the torrent being played from; 0 when playing from disk */
+  downloadSpeed: number
+  numPeers: number
+  /** Stuck buffering, or no peers: worth trying another release */
+  slow: boolean
+  /** The opening or ending chapter playing now; `to` is the next chapter's start, null for the end of the file */
+  skip: { kind: 'opening' | 'ending'; to: number | null } | null
+  /** Playing a complete file from disk, not streaming */
+  local: boolean
+  /** Parts of the file fetched so far, as [from, to] fractions of its length */
+  fetched: [number, number][]
   volume: number
   muted: boolean
   audioTracks: PlayerTrack[]
@@ -272,6 +291,8 @@ export type PlayerCommand =
   /** id null turns subtitles off */
   | { type: 'sub'; id: number | null }
   | { type: 'next' }
+  /** Past the opening or ending chapter playing now */
+  | { type: 'skip-chapter' }
   | { type: 'close' }
   | { type: 'fullscreen'; on?: boolean }
   /** Also saved as the default for future episodes */
@@ -320,6 +341,14 @@ export interface AppApi {
   playerCommand(cmd: PlayerCommand): Promise<void>
   getPlayerState(): Promise<PlayerState>
   onPlayerState(cb: (state: PlayerState) => void): () => void
+  /**
+   * Switch the playing episode to another upload of it (any group, most seeders
+   * first), keeping the position. The library uses the new one from then on.
+   * Returns the new release's name.
+   */
+  tryAnotherRelease(): Promise<string>
+  /** Bytes in the stream folder, cached episodes included */
+  getStreamCacheSize(): Promise<number>
   /** Place the video over this part of the page; null hides it. */
   setVideoBounds(rect: VideoRect | null): void
   /**

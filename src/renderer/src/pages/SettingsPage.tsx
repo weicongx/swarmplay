@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react'
 import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings, type Upscaler } from '@shared/types'
-import { UPSCALERS } from '../format'
+import { formatBytes, UPSCALERS } from '../format'
 
 export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [player, setPlayer] = useState<PlayerInfo | null>(null)
   const [version, setVersion] = useState('')
+  const [cacheBytes, setCacheBytes] = useState<number | null>(null)
 
   useEffect(() => {
     window.api.getSettings().then(setSettings)
+    window.api.getStreamCacheSize().then(setCacheBytes)
     window.api.getPlayerInfo().then(setPlayer)
     window.api.getVersion().then(setVersion)
   }, [])
@@ -19,6 +21,8 @@ export default function SettingsPage(): JSX.Element {
   async function update(patch: Partial<Settings>): Promise<void> {
     setSettings(await window.api.setSettings(patch))
     if ('mpvPath' in patch) setPlayer(await window.api.getPlayerInfo())
+    // Turning the cache down deletes the oldest episodes; give that a moment before measuring.
+    if ('streamCacheGB' in patch) setTimeout(() => window.api.getStreamCacheSize().then(setCacheBytes), 1500)
     setSaved(true)
     setTimeout(() => setSaved(false), 1200)
   }
@@ -92,6 +96,21 @@ export default function SettingsPage(): JSX.Element {
         <span>Play the next episode automatically</span>
       </label>
 
+      <label>
+        <span>Openings and endings</span>
+        <select
+          value={settings.autoSkip}
+          onChange={(e) => update({ autoSkip: e.target.value as Settings['autoSkip'] })}
+        >
+          <option value="off">Show a Skip button</option>
+          <option value="openings">Skip openings automatically</option>
+          <option value="both">Skip openings and endings automatically</option>
+        </select>
+        <small className="muted">
+          For releases whose chapters are named, such as OP and ED. Press S in the player to skip.
+        </small>
+      </label>
+
       <label className="inline">
         <input
           type="checkbox"
@@ -162,6 +181,38 @@ export default function SettingsPage(): JSX.Element {
       <label className="inline">
         <input
           type="checkbox"
+          checked={settings.streamCacheGB > 0}
+          onChange={(e) => update({ streamCacheGB: e.target.checked ? DEFAULT_CACHE_GB : 0 })}
+        />
+        <span>Keep recently streamed episodes, so watching them again doesn't need peers</span>
+      </label>
+      {settings.streamCacheGB > 0 && (
+        <label className="indented">
+          <div className="row">
+            <span className="muted unit">Up to</span>
+            <input
+              type="number"
+              min={1}
+              className="short"
+              defaultValue={settings.streamCacheGB}
+              onBlur={(e) => {
+                const v = Math.max(1, Math.round(Number(e.target.value) || DEFAULT_CACHE_GB))
+                e.target.value = String(v)
+                if (v !== settings.streamCacheGB) update({ streamCacheGB: v })
+              }}
+            />
+            <span className="muted unit">GB</span>
+          </div>
+          <small className="muted">
+            {cacheBytes != null && `Using ${formatBytes(cacheBytes)}. `}
+            The episodes streamed longest ago are deleted first. A streamed episode takes its full size on disk.
+          </small>
+        </label>
+      )}
+
+      <label className="inline">
+        <input
+          type="checkbox"
           checked={settings.seedAfterDownload}
           onChange={(e) => update({ seedAfterDownload: e.target.checked })}
         />
@@ -185,6 +236,8 @@ export default function SettingsPage(): JSX.Element {
     </div>
   )
 }
+
+const DEFAULT_CACHE_GB = 10
 
 function LimitInput({
   label,

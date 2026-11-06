@@ -93,7 +93,8 @@ export function getLibrary(): LibraryData {
       episodeNum: r.episode_num,
       title: r.title,
       sizeBytes: r.size_bytes,
-      publishedAt: r.published_at
+      publishedAt: r.published_at,
+      seeders: r.seeders
     })
   )
   const follows = (
@@ -126,7 +127,7 @@ export function getLibrary(): LibraryData {
  * and the user didn't remove it.
  */
 export const AVAILABLE_SQL = `
-  SELECT r.id, f.folder_id, r.follow_id, r.episode_num, r.title, r.size_bytes, r.published_at
+  SELECT r.id, f.folder_id, r.follow_id, r.episode_num, r.title, r.size_bytes, r.published_at, r.seeders
   FROM releases r JOIN follows f ON f.id = r.follow_id
   WHERE r.dismissed = 0
     AND NOT EXISTS (SELECT 1 FROM torrents t WHERE t.info_hash = r.info_hash)
@@ -142,6 +143,7 @@ interface AvailableRow {
   title: string
   size_bytes: number
   published_at: number
+  seeders: number | null
 }
 
 export function createFolder(name: string, parentId: number | null): number {
@@ -384,6 +386,15 @@ async function matchSeries(series: string): Promise<{ folder: FolderRow | null; 
   const anilist = await findSeries(series).catch(() => null)
   const byId = anilist ? folders.find((f) => f.anilist_id === anilist.media.id) : undefined
   return { folder: byId ?? null, anilist }
+}
+
+/** Every name a folder's series goes by: the folder's own and its AniList titles. */
+export function folderTitles(folderId: number): string[] {
+  const f = getDb().prepare('SELECT name, anilist_titles FROM folders WHERE id = ?').get(folderId) as
+    | { name: string; anilist_titles: string | null }
+    | undefined
+  if (!f) return []
+  return [f.name, ...(f.anilist_titles ? (JSON.parse(f.anilist_titles) as string[]) : [])]
 }
 
 /** Folder and a short label for an episode, for notifications. */

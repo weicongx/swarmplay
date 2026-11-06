@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PlayerCommand, PlayerState, PlayerTrack, Upscaler } from '@shared/types'
-import { formatClock, UPSCALERS } from '../format'
+import { errorMessage, formatClock, formatSpeed, UPSCALERS } from '../format'
 
 const HIDE_CONTROLS_MS = 3000
 
@@ -94,6 +94,7 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
         m: () => send({ type: 'toggle-mute' }),
         f: () => send({ type: 'fullscreen' }),
         n: () => state.hasNext && send({ type: 'next' }),
+        s: () => state.skip && send({ type: 'skip-chapter' }),
         u: () => {
           // Cycle the upscaler, for quick before/after comparisons.
           const modes = UPSCALERS.filter((x) => x.id !== 'rtx' || nvidia).map((x) => x.id)
@@ -109,11 +110,12 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [state.volume, state.fullscreen, state.hasNext, state.upscaler, nvidia])
+  }, [state.volume, state.fullscreen, state.hasNext, state.skip, state.upscaler, nvidia])
 
   const duration = state.duration ?? 0
   const shownPos = seekPreview ?? state.timePos
   const hideBars = state.fullscreen && idle
+  const played = duration ? (Math.min(shownPos, duration) / duration) * 100 : 0
 
   return (
     <div className={`player ${state.fullscreen ? 'fullscreen' : ''} ${hideBars ? 'idle' : ''}`}>
@@ -127,13 +129,20 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
             {state.episodeLabel && <span className="player-episode"> · {state.episodeLabel}</span>}
             <span className="player-file muted">{state.title}</span>
           </div>
-          {state.buffering && !state.error && <span className="pill pill-downloading">Buffering…</span>}
+          {state.buffering && !state.error && (
+            <span className="pill pill-downloading" title="Download speed and peers of this stream">
+              Buffering…
+              {!state.local &&
+                ` ↓ ${formatSpeed(state.downloadSpeed)} · ${state.numPeers} peer${state.numPeers === 1 ? '' : 's'}`}
+            </span>
+          )}
         </div>
       )}
 
       <div className="player-video" ref={videoRef} onClick={onVideoClick} onDoubleClick={onVideoDoubleClick} />
 
       {state.error && <div className="player-error">{state.error}</div>}
+      <SlowReleaseBar state={state} />
 
       {!hideBars && (
         <div className="player-controls">
@@ -165,8 +174,14 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
               if (seekPreview != null) send({ type: 'seek', seconds: seekPreview })
               setSeekPreview(null)
             }}
-            style={{ ['--pct' as string]: `${duration ? (Math.min(shownPos, duration) / duration) * 100 : 0}%` }}
+            style={{ ['--pct' as string]: `${played}%`, ['--fetched' as string]: fetchedGradient(state.fetched) }}
+            title={state.local ? undefined : 'The lighter parts are already fetched and play without waiting'}
           />
+          {state.skip && (
+            <button className="primary player-skip" onClick={() => send({ type: 'skip-chapter' })} title="Skip (S)">
+              {state.skip.kind === 'opening' ? 'Skip intro' : 'Skip credits'}
+            </button>
+          )}
           <button className="ctl" onClick={() => send({ type: 'toggle-mute' })} title="Mute (M)">
             {state.muted || state.volume === 0 ? '🔇' : '🔊'}
           </button>
@@ -204,6 +219,71 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
       )}
     </div>
   )
+}
+
+/** Offers another upload of the episode when this one is stuck buffering or has no peers. */
+function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
+  const [dismissed, setDismissed] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null)
+
+  // A new episode (or release) starts fresh.
+  useEffect(() => {
+    setDismissed(null)
+    if (!busy) setMessage((m) => (m?.error ? null : m))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.title])
+  useEffect(() => {
+    if (!message || message.error) return
+    const t = setTimeout(() => setMessage(null), 6000)
+    return () => clearTimeout(t)
+  }, [message])
+
+  const tryAnother = async (): Promise<void> => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      setMessage({ text: `Switched to ${await window.api.tryAnotherRelease()}`, error: false })
+    } catch (err) {
+      setMessage({ text: errorMessage(err), error: true })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (busy) return <div className="player-slow">Looking for another upload of this episode…</div>
+  if (message) {
+    return (
+      <div className={`player-slow ${message.error ? 'failed' : 'done'}`}>
+        <span className="player-slow-text">{message.text}</span>
+        <button className="link" onClick={() => setMessage(null)}>
+          OK
+        </button>
+      </div>
+    )
+  }
+  if (!state.slow || state.error || dismissed === state.title) return null
+  return (
+    <div className="player-slow">
+      <span className="player-slow-text">
+        This release is slow{state.numPeers === 0 ? ' (no peers)' : ''}. Try another?
+      </span>
+      <button className="primary" onClick={tryAnother}>
+        Try another
+      </button>
+      <button onClick={() => setDismissed(state.title)}>Dismiss</button>
+    </div>
+  )
+}
+
+/** The fetched parts of the file as a gradient layer under the seek bar's played part. */
+function fetchedGradient(ranges: [number, number][]): string {
+  if (ranges.length === 0) return 'none'
+  const stops = ranges.flatMap(([a, b]) => {
+    const [from, to] = [(a * 100).toFixed(2), (b * 100).toFixed(2)]
+    return [`transparent ${from}%`, `var(--fetched-color) ${from}%`, `var(--fetched-color) ${to}%`, `transparent ${to}%`]
+  })
+  return `linear-gradient(to right, ${stops.join(', ')})`
 }
 
 function TrackSelect({

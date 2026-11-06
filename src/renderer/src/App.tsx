@@ -5,6 +5,7 @@ import LibraryPage from './pages/LibraryPage'
 import PlayerView from './pages/PlayerView'
 import SearchPage from './pages/SearchPage'
 import SettingsPage from './pages/SettingsPage'
+import { formatSpeed } from './format'
 
 type Page = 'search' | 'downloads' | 'library' | 'settings'
 
@@ -31,10 +32,11 @@ export default function App(): JSX.Element {
     []
   )
 
+  // Only downloads still fetching count; a stream, the next episode fetched ahead, or a finished one doesn't.
   useEffect(
     () =>
       window.api.onTorrentsUpdate((list) =>
-        setActiveDownloads(list.filter((t) => t.status === 'downloading' || t.status === 'starting').length)
+        setActiveDownloads(list.filter((t) => t.status === 'downloading' && t.progress < 1).length)
       ),
     []
   )
@@ -63,6 +65,7 @@ export default function App(): JSX.Element {
             {n.id === 'downloads' && activeDownloads > 0 && <span className="badge">{activeDownloads}</span>}
           </button>
         ))}
+        {playing && <NowStreaming state={player} />}
       </nav>
       <main className="content">
         {/* Search stays mounted so results survive switching tabs. */}
@@ -81,6 +84,24 @@ export default function App(): JSX.Element {
         {/* The player covers the current page, which stays mounted underneath. */}
         {playing && <PlayerView state={player} />}
       </main>
+    </div>
+  )
+}
+
+/** What's playing, and how its stream is doing, at the foot of the sidebar. */
+function NowStreaming({ state }: { state: PlayerState }): JSX.Element {
+  const peers = `${state.numPeers} peer${state.numPeers === 1 ? '' : 's'}`
+  return (
+    <div className={`now-streaming ${state.slow ? 'slow' : ''}`} title={state.title}>
+      <div className="now-label">{state.local ? 'Now playing' : 'Now streaming'}</div>
+      <div className="now-title">{state.series ?? 'Unsorted'}</div>
+      {state.episodeLabel && <div className="now-episode">{state.episodeLabel}</div>}
+      {!state.local && (
+        <div className="now-stats">
+          ↓ {formatSpeed(state.downloadSpeed)} · {peers}
+          {state.buffering && ' · buffering'}
+        </div>
+      )}
     </div>
   )
 }
