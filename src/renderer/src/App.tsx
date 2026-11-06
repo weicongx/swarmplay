@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import DownloadsPage from './pages/DownloadsPage'
+import LibraryPage from './pages/LibraryPage'
 import SearchPage from './pages/SearchPage'
 import SettingsPage from './pages/SettingsPage'
 
@@ -45,18 +46,9 @@ export default function App(): JSX.Element {
           <SearchPage onOpenDownloads={() => setPage('downloads')} />
         </div>
         {page === 'downloads' && <DownloadsPage />}
-        {page === 'library' && <Placeholder title="Library" note="Series folders arrive in phase 4." />}
+        {page === 'library' && <LibraryPage />}
         {page === 'settings' && <SettingsPage />}
       </main>
-    </div>
-  )
-}
-
-function Placeholder({ title, note }: { title: string; note: string }): JSX.Element {
-  return (
-    <div className="page">
-      <h1>{title}</h1>
-      <p className="muted">{note}</p>
     </div>
   )
 }

@@ -54,6 +54,8 @@ export interface TorrentInfo {
   files: TorrentFileEntry[]
   totalLength: number
   trackers: string[]
+  /** Series name parsed from the release name, used to suggest a library folder */
+  series: string
 }
 
 export type TorrentStatus = 'starting' | 'downloading' | 'seeding' | 'done' | 'paused' | 'error'
@@ -101,6 +103,34 @@ export interface AddTorrentRequest {
   nyaaId?: number
   /** Files to download; omitted means every file. */
   fileIndexes?: number[]
+  /** Library folder for the new episodes: an existing one, or a new one to create. */
+  folder?: { id: number } | { name: string; parentId?: number | null }
+}
+
+export interface FolderInfo {
+  id: number
+  name: string
+  parentId: number | null
+  createdAt: number
+}
+
+export interface EpisodeInfo {
+  id: number
+  folderId: number | null
+  torrentId: number
+  fileIndex: number
+  /** File name */
+  title: string
+  episodeNum: number | null
+  sizeBytes: number
+  positionSec: number
+  durationSec: number | null
+  watched: boolean
+}
+
+export interface LibraryData {
+  folders: FolderInfo[]
+  episodes: EpisodeInfo[]
 }
 
 export interface AddTorrentResult {
@@ -159,6 +189,15 @@ export interface AppApi {
   setWatched(torrentId: number, fileIndex: number, watched: boolean): Promise<void>
   getPlayerInfo(): Promise<PlayerInfo>
   pickMpv(): Promise<string | null>
+
+  getLibrary(): Promise<LibraryData>
+  createFolder(name: string, parentId: number | null): Promise<number>
+  renameFolder(id: number, name: string): Promise<void>
+  /** Episodes inside move to Unsorted; with deleteDownloads, torrents only used by this folder are removed with their files. */
+  deleteFolder(id: number, deleteDownloads: boolean): Promise<void>
+  moveFolder(id: number, parentId: number | null): Promise<void>
+  /** folderId null moves them to Unsorted */
+  moveEpisodes(episodeIds: number[], folderId: number | null): Promise<void>
   /** Called about once a second with every torrent's status. Returns an unsubscribe function. */
   onTorrentsUpdate(cb: (torrents: TorrentStatusInfo[]) => void): () => void
 }

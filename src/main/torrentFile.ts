@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import type { TorrentInfo } from '@shared/types'
 import { bdecode, type BValue } from './bencode'
 
-export interface ParsedTorrent extends TorrentInfo {
+export interface ParsedTorrent extends Omit<TorrentInfo, 'series'> {
   infoHash: string
 }
 

@@ -23,6 +23,13 @@ const api: AppApi = {
     ipcRenderer.invoke('player:setWatched', torrentId, fileIndex, watched),
   getPlayerInfo: () => ipcRenderer.invoke('player:info'),
   pickMpv: () => ipcRenderer.invoke('dialog:pickMpv'),
+
+  getLibrary: () => ipcRenderer.invoke('library:get'),
+  createFolder: (name, parentId) => ipcRenderer.invoke('library:createFolder', name, parentId),
+  renameFolder: (id, name) => ipcRenderer.invoke('library:renameFolder', id, name),
+  deleteFolder: (id, deleteDownloads) => ipcRenderer.invoke('library:deleteFolder', id, deleteDownloads),
+  moveFolder: (id, parentId) => ipcRenderer.invoke('library:moveFolder', id, parentId),
+  moveEpisodes: (ids, folderId) => ipcRenderer.invoke('library:moveEpisodes', ids, folderId),
   onTorrentsUpdate: (cb) => {
     const listener = (_e: IpcRendererEvent, list: TorrentStatusInfo[]): void => cb(list)
     ipcRenderer.on('torrents:update', listener)

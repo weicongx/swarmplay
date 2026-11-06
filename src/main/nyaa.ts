@@ -1,5 +1,6 @@
 import { XMLParser } from 'fast-xml-parser'
 import type { NyaaResult, NyaaSearchParams, TorrentInfo } from '@shared/types'
+import { parseRelease } from './release'
 import { parseTorrentFile } from './torrentFile'
 
 const USER_AGENT = 'swarmplay/0.1 (+desktop)'
@@ -94,5 +95,5 @@ export async function fetchTorrentFile(baseUrl: string, torrentUrl: string): Pro
 /** List a torrent's files without touching the swarm. */
 export async function getTorrentInfo(baseUrl: string, torrentUrl: string): Promise<TorrentInfo> {
   const { infoHash: _, ...info } = parseTorrentFile(await fetchTorrentFile(baseUrl, torrentUrl))
-  return info
+  return { ...info, series: parseRelease(info.name).series }
 }

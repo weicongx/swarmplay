@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { NYAA_CATEGORIES, NYAA_FILTERS, VIDEO_EXT, type NyaaResult, type TorrentInfo } from '@shared/types'
+import { flattenFolders, folderKey } from '@shared/folders'
+import {
+  NYAA_CATEGORIES,
+  NYAA_FILTERS,
+  VIDEO_EXT,
+  type AddTorrentRequest,
+  type FolderInfo,
+  type NyaaResult,
+  type TorrentInfo
+} from '@shared/types'
 import { displayPath, errorMessage, formatAge, formatBytes, magnetFor } from '../format'
 
 type SortKey = 'date' | 'seeders' | 'size' | 'downloads'
@@ -180,6 +189,10 @@ function DetailPanel({
   const [checked, setChecked] = useState<Set<number>>(new Set())
   const [adding, setAdding] = useState(false)
   const [added, setAdded] = useState<string | null>(null)
+  const [folders, setFolders] = useState<FolderInfo[]>([])
+  /** 'new', 'none' (Unsorted), or an existing folder id */
+  const [folderChoice, setFolderChoice] = useState<string>('new')
+  const [newFolderName, setNewFolderName] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -187,11 +200,15 @@ function DetailPanel({
     setError(null)
     setCopied(false)
     setAdded(null)
-    window.api
-      .getTorrentInfo(result.torrentUrl)
-      .then((i) => {
+    Promise.all([window.api.getTorrentInfo(result.torrentUrl), window.api.getLibrary()])
+      .then(([i, lib]) => {
         if (cancelled) return
         setInfo(i)
+        // File it with an existing folder for this series if there is one.
+        setFolders(lib.folders)
+        const match = lib.folders.find((f) => folderKey(f.name) === folderKey(i.series))
+        setFolderChoice(match ? String(match.id) : 'new')
+        setNewFolderName(i.series)
         // Default to every video file; fall back to everything if there are none.
         const videos = i.files.filter((f) => VIDEO_EXT.test(f.path))
         setChecked(new Set((videos.length ? videos : i.files).map((f) => f.index)))
@@ -207,7 +224,19 @@ function DetailPanel({
     setCopied(true)
   }
 
-  const request = { torrentUrl: result.torrentUrl, nyaaId: result.id, fileIndexes: [...checked] }
+  const request: AddTorrentRequest = {
+    torrentUrl: result.torrentUrl,
+    nyaaId: result.id,
+    fileIndexes: [...checked],
+    folder:
+      folderChoice === 'new'
+        ? newFolderName.trim()
+          ? { name: newFolderName }
+          : undefined
+        : folderChoice === 'none'
+          ? undefined
+          : { id: Number(folderChoice) }
+  }
 
   async function download(): Promise<void> {
     setAdding(true)
@@ -282,6 +311,29 @@ function DetailPanel({
           </>
         )}
       </dl>
+
+      {info && (
+        <label className="save-to">
+          <span>Save to library folder</span>
+          <select value={folderChoice} onChange={(e) => setFolderChoice(e.target.value)}>
+            <option value="new">New folder…</option>
+            {flattenFolders(folders).map(({ folder, depth }) => (
+              <option key={folder.id} value={folder.id}>
+                {' '.repeat(depth)}
+                {folder.name}
+              </option>
+            ))}
+            <option value="none">Unsorted</option>
+          </select>
+          {folderChoice === 'new' && (
+            <input
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="Series name"
+            />
+          )}
+        </label>
+      )}
 
       <div className="actions">
         <button className="primary" disabled={!info || checked.size === 0 || adding} onClick={download}>

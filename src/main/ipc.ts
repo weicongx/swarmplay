@@ -12,6 +12,15 @@ import {
   showTorrentInFolder
 } from './torrent'
 import { findMpv, play, setWatched } from './player'
+import {
+  createFolder,
+  deleteFolder,
+  getLibrary,
+  moveEpisodes,
+  moveFolder,
+  renameFolder,
+  resolveFolder
+} from './library'
 
 export function registerIpc(): void {
   ipcMain.handle('nyaa:search', async (_e, params: NyaaSearchParams) => {
@@ -32,7 +41,7 @@ export function registerIpc(): void {
     return settings
   })
 
-  ipcMain.handle('torrents:add', (_e, req: AddTorrentRequest) => addTorrent(req))
+  ipcMain.handle('torrents:add', (_e, req: AddTorrentRequest) => addTorrent(req, resolveFolder(req.folder)))
   ipcMain.handle('torrents:list', () => listTorrents())
   ipcMain.handle('torrents:pause', (_e, id: number) => pauseTorrent(id))
   ipcMain.handle('torrents:resume', (_e, id: number) => resumeTorrent(id))
@@ -43,9 +52,18 @@ export function registerIpc(): void {
 
   ipcMain.handle('player:play', (_e, torrentId: number, fileIndex: number) => play(torrentId, fileIndex))
   ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
-    const { id } = await addTorrent(req)
+    const { id } = await addTorrent(req, resolveFolder(req.folder))
     await play(id, fileIndex)
   })
+
+  ipcMain.handle('library:get', () => getLibrary())
+  ipcMain.handle('library:createFolder', (_e, name: string, parentId: number | null) => createFolder(name, parentId))
+  ipcMain.handle('library:renameFolder', (_e, id: number, name: string) => renameFolder(id, name))
+  ipcMain.handle('library:deleteFolder', (_e, id: number, deleteDownloads: boolean) =>
+    deleteFolder(id, deleteDownloads === true)
+  )
+  ipcMain.handle('library:moveFolder', (_e, id: number, parentId: number | null) => moveFolder(id, parentId))
+  ipcMain.handle('library:moveEpisodes', (_e, ids: number[], folderId: number | null) => moveEpisodes(ids, folderId))
   ipcMain.handle('player:setWatched', (_e, torrentId: number, fileIndex: number, watched: boolean) =>
     setWatched(torrentId, fileIndex, watched === true)
   )

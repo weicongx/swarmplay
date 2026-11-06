@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {
+    "anitomy": "^0.0.35",
     "fast-xml-parser": "^4.5.1",
     "webtorrent": "^3.0.21"
   },

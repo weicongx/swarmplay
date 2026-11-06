@@ -12,6 +12,7 @@ import {
 } from '@shared/types'
 import { getDb, getSettings } from './db'
 import { fetchTorrentFile } from './nyaa'
+import { parseRelease } from './release'
 import { parseTorrentFile, type ParsedTorrent } from './torrentFile'
 
 // The webtorrent package ships no types; these cover the parts used here.
@@ -109,6 +110,7 @@ export async function initTorrents(): Promise<void> {
       : meta.files.map(() => 0)
     const entry: Entry = { row, meta, selected, fileProgress, torrent: null, error: null }
     entries.set(row.id, entry)
+    syncEpisodes(entry) // torrents added before the library existed land in Unsorted
 
     if (row.status === 'seeding' && !seedAfterDownload) setStatus(entry, 'done')
     if (row.status === 'downloading' || row.status === 'seeding' || row.status === 'error') {
@@ -119,7 +121,14 @@ export async function initTorrents(): Promise<void> {
   setInterval(tick, 1000)
 }
 
-export async function addTorrent(req: AddTorrentRequest): Promise<AddTorrentResult> {
+/**
+ * Download a torrent. With a folder, its episodes are filed there and a new
+ * torrent is saved under <library>/<folder name>/ on disk.
+ */
+export async function addTorrent(
+  req: AddTorrentRequest,
+  folder: { id: number; name: string } | null = null
+): Promise<AddTorrentResult> {
   const settings = getSettings()
   const buf = await fetchTorrentFile(settings.nyaaBaseUrl, req.torrentUrl)
   const meta = parseTorrentFile(buf)
@@ -136,6 +145,7 @@ export async function addTorrent(req: AddTorrentRequest): Promise<AddTorrentResu
     const added = wanted.filter((i) => !existing.selected.has(i))
     for (const i of added) existing.selected.add(i)
     saveSelection(existing)
+    syncEpisodes(existing, folder ? folder.id : undefined)
     if (existing.torrent?.ready) for (const i of added) existing.torrent.files[i].select()
     if (added.length > 0 && existing.row.status !== 'downloading') {
       setStatus(existing, 'downloading')
@@ -144,7 +154,8 @@ export async function addTorrent(req: AddTorrentRequest): Promise<AddTorrentResu
     return { id: existing.row.id, existed: true }
   }
 
-  await mkdir(settings.libraryRoot, { recursive: true })
+  const savePath = folder ? join(settings.libraryRoot, safeDirName(folder.name)) : settings.libraryRoot
+  await mkdir(savePath, { recursive: true })
   const selectedJson = wanted.length === meta.files.length ? null : JSON.stringify(wanted)
   const now = Date.now()
   const result = getDb()
@@ -152,7 +163,7 @@ export async function addTorrent(req: AddTorrentRequest): Promise<AddTorrentResu
       `INSERT INTO torrents (info_hash, name, torrent_file, nyaa_id, save_path, status, progress, added_at, selected_files)
        VALUES (?, ?, ?, ?, ?, 'downloading', 0, ?, ?)`
     )
-    .run(meta.infoHash, meta.name, buf, req.nyaaId ?? null, settings.libraryRoot, now, selectedJson)
+    .run(meta.infoHash, meta.name, buf, req.nyaaId ?? null, savePath, now, selectedJson)
 
   const id = Number(result.lastInsertRowid)
   const row = getDb().prepare('SELECT * FROM torrents WHERE id = ?').get(id) as unknown as TorrentRow
@@ -165,6 +176,7 @@ export async function addTorrent(req: AddTorrentRequest): Promise<AddTorrentResu
     error: null
   }
   entries.set(id, entry)
+  syncEpisodes(entry, folder?.id ?? null)
   start(entry)
   return { id, existed: false }
 }
@@ -248,6 +260,7 @@ export async function preparePlayback(torrentId: number, fileIndex: number): Pro
   if (!entry.selected.has(fileIndex)) {
     entry.selected.add(fileIndex)
     saveSelection(entry)
+    syncEpisodes(entry)
     if (entry.torrent?.ready) entry.torrent.files[fileIndex].select()
   }
   if (!entry.torrent) {
@@ -329,6 +342,50 @@ function stop(entry: Entry): Promise<void> {
 function setStatus(entry: Entry, status: PersistedStatus): void {
   entry.row.status = status
   getDb().prepare('UPDATE torrents SET status = ? WHERE id = ?').run(status, entry.row.id)
+}
+
+/**
+ * Make sure every selected video has a library episode row. New rows go to
+ * `folderId` if given, otherwise to whichever folder this torrent already uses.
+ */
+function syncEpisodes(entry: Entry, folderId?: number | null): void {
+  const db = getDb()
+  const folder =
+    folderId !== undefined
+      ? folderId
+      : ((
+          db
+            .prepare('SELECT folder_id FROM episodes WHERE torrent_id = ? AND folder_id IS NOT NULL LIMIT 1')
+            .get(entry.row.id) as { folder_id: number } | undefined
+        )?.folder_id ?? null)
+
+  // Rows made by phase 3 playback may lack a title or episode number; fill those in.
+  const upsert = db.prepare(
+    `INSERT INTO episodes (folder_id, torrent_id, file_index, title, episode_num, file_path, size_bytes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(torrent_id, file_index) DO UPDATE SET
+       title = CASE WHEN episodes.title = '' THEN excluded.title ELSE episodes.title END,
+       episode_num = COALESCE(episodes.episode_num, excluded.episode_num),
+       file_path = excluded.file_path,
+       size_bytes = excluded.size_bytes`
+  )
+  for (const f of entry.meta.files) {
+    if (!entry.selected.has(f.index) || !VIDEO_EXT.test(f.path)) continue
+    const title = basename(f.path)
+    upsert.run(folder, entry.row.id, f.index, title, parseRelease(title).episode, resolve(entry.row.save_path, f.path), f.length)
+  }
+}
+
+/** A folder name that is safe on Windows. */
+function safeDirName(name: string): string {
+  let s = name
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, 120)
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(s)) s += '_'
+  return s || 'Untitled'
 }
 
 function saveSelection(entry: Entry): void {

@@ -4,7 +4,8 @@ import { connect, type Socket } from 'net'
 import { join } from 'path'
 import { RESUME_MIN_SEC } from '@shared/types'
 import { getDb, getSettings } from './db'
-import { playableFiles, preparePlayback, type PlaybackTarget } from './torrent'
+import { nextEpisode } from './library'
+import { preparePlayback, type PlaybackTarget } from './torrent'
 
 // One mpv instance is reused for every episode and driven over its JSON IPC pipe.
 const PIPE = `\\\\.\\pipe\\swarmplay-mpv-${process.pid}`
@@ -205,11 +206,10 @@ function onEpisodeEnd(ended: NowPlaying): void {
 
   // A stream that drops out early also reports eof, so only move on if it really finished.
   const finished = ended.duration != null && ended.pos >= ended.duration * WATCHED_AT
-  const queue = playableFiles(ended.torrentId)
-  const next = queue[queue.indexOf(ended.fileIndex) + 1]
+  const next = finished && getSettings().autoplayNext ? nextEpisode(ended.torrentId, ended.fileIndex) : null
 
-  if (finished && next !== undefined && getSettings().autoplayNext) {
-    play(ended.torrentId, next).catch((err) => {
+  if (next) {
+    play(next.torrentId, next.fileIndex).catch((err) => {
       console.error('Autoplay failed:', err)
       command('quit')
     })
