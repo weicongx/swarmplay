@@ -1,6 +1,6 @@
 import type { AddTorrentRequest, AniListMedia, EpisodeInfo, FolderInfo, LibraryData } from '@shared/types'
 import { compareEpisodes, seriesKey } from '@shared/folders'
-import { findSeries, recentCandidate, type Candidate } from './anilist'
+import { fetchDescription, findSeries, recentCandidate, type Candidate } from './anilist'
 import { getDb } from './db'
 import { playableFiles, removeTorrent } from './torrent'
 
@@ -96,6 +96,31 @@ export async function autoLinkAll(): Promise<void> {
     .prepare('SELECT id FROM folders WHERE anilist_id IS NULL AND anilist_checked_at IS NULL')
     .all() as { id: number }[]
   for (const { id } of ids) await autoLink(id).catch(() => {})
+
+  // Folders linked before descriptions were stored.
+  const linked = getDb().prepare('SELECT id, anilist_meta FROM folders WHERE anilist_meta IS NOT NULL').all() as {
+    id: number
+    anilist_meta: string
+  }[]
+  for (const f of linked) {
+    if (!('description' in JSON.parse(f.anilist_meta))) await fillDescription(f.id).catch(() => {})
+  }
+}
+
+/** Fetch the synopsis for a linked folder whose stored AniList data predates it. */
+async function fillDescription(folderId: number): Promise<void> {
+  const before = getDb().prepare('SELECT anilist_id FROM folders WHERE id = ?').get(folderId) as
+    | { anilist_id: number | null }
+    | undefined
+  if (before?.anilist_id == null) return
+  const description = await fetchDescription(before.anilist_id)
+  // Re-read: the folder may have been relinked or deleted while the request waited.
+  const f = getDb().prepare('SELECT anilist_id, anilist_meta FROM folders WHERE id = ?').get(folderId) as
+    | { anilist_id: number | null; anilist_meta: string | null }
+    | undefined
+  if (!f?.anilist_meta || f.anilist_id !== before.anilist_id) return
+  const meta = { ...(JSON.parse(f.anilist_meta) as AniListMedia), description }
+  getDb().prepare('UPDATE folders SET anilist_meta = ? WHERE id = ?').run(JSON.stringify(meta), folderId)
 }
 
 async function autoLink(folderId: number): Promise<void> {
@@ -112,6 +137,8 @@ function saveLink(folderId: number, c: Candidate): void {
       'UPDATE folders SET anilist_id = ?, anilist_titles = ?, anilist_meta = ?, cover_url = ?, anilist_checked_at = ? WHERE id = ?'
     )
     .run(c.media.id, JSON.stringify(c.titles), JSON.stringify(c.media), c.media.coverUrl, Date.now(), folderId)
+  // Search results cached before descriptions were fetched don't carry one.
+  if (c.media.description === undefined) fillDescription(folderId).catch(() => {})
 }
 
 export function renameFolder(id: number, name: string): void {

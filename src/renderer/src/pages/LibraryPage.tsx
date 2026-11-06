@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode
+} from 'react'
 import { compareEpisodes, flattenFolders, splitSeason } from '@shared/folders'
 import {
   RESUME_MIN_SEC,
@@ -228,6 +237,7 @@ function FolderHeader({
         {a?.episodes ? ` of ${a.episodes}` : ''}
         {episodes.length > 0 && ` · ${watched} watched`}
       </p>
+      {a?.description && <Description text={a.description} />}
 
       <div className="torrent-actions">
         {next && (
@@ -275,6 +285,31 @@ function FolderHeader({
         />
       )}
       </div>
+    </div>
+  )
+}
+
+/** The series synopsis, clamped to a few lines until expanded. */
+function Description({ text }: { text: string }): JSX.Element {
+  const ref = useRef<HTMLParagraphElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el && !expanded) setOverflows(el.scrollHeight > el.clientHeight + 1)
+  }, [text, expanded])
+
+  return (
+    <div className="series-description">
+      <p ref={ref} className={expanded ? '' : 'clamped'}>
+        {text}
+      </p>
+      {(overflows || expanded) && (
+        <button className="link" onClick={() => setExpanded(!expanded)}>
+          {expanded ? 'Less' : 'More'}
+        </button>
+      )}
     </div>
   )
 }

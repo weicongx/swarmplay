@@ -615,6 +615,28 @@ button.danger {
 .anilist-line {
   font-size: 13px;
 }
+.series-description {
+  max-width: 720px;
+  margin: 4px 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.series-description p {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--muted);
+}
+.series-description p.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.series-description button.link {
+  margin-top: 4px;
+  font-size: 13px;
+  text-decoration: none;
+}
 
 .anilist-picker {
   margin-top: 14px;

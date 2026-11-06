@@ -180,6 +180,8 @@ export interface AniListMedia {
   coverUrl: string | null
   /** Accent color of the cover, e.g. "#e4a15d" */
   color: string | null
+  /** Plain-text synopsis; null if AniList has none, undefined if not fetched yet */
+  description?: string | null
 }
 
 export interface PlayerTrack {
