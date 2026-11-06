@@ -1,25 +1,29 @@
-/* Warm neutrals and a terracotta accent, after the Claude app's dark theme. */
+/*
+ * Colors picked from the Claude desktop app (dark): neutral grays and blue for
+ * interactive elements. Its terracotta is only in the logo, as in our app icon.
+ */
 :root {
-  --bg: #262624;
-  --sidebar: #1f1e1d;
-  --panel: #30302e;
-  --panel-2: #3a3a37;
-  --border: #45443f;
-  --text: #faf9f5;
-  --muted: #a6a39b;
-  /* Accent for text, outlines and progress */
-  --accent: #d97757;
-  /* Filled buttons and badges: deep enough for white text to stay readable */
-  --accent-strong: #b8583a;
-  --accent-strong-hover: #a84f33;
+  --bg: #181818; /* main area */
+  --sidebar: #1f1f1f; /* left sidebar */
+  --panel: #252525; /* message bubbles, banners: our cards and bars */
+  --input: #303030; /* text inputs */
+  --panel-2: #383838; /* secondary buttons */
+  --selected: #404040; /* selected sidebar item */
+  --border: #363636; /* input borders */
+  --divider: #262626; /* lines between panes */
+  --text: #f2f2f2;
+  --muted: #979797;
+  --accent: #267cde; /* toggles, links, progress */
+  --accent-strong: #267cde;
+  --accent-strong-hover: #1f6dc4;
   --accent-text: #ffffff;
-  --accent-soft: rgba(217, 119, 87, 0.12);
-  --green: #6dbf7f;
-  --red: #e5655e;
-  --red-strong: #b8433d;
-  --red-soft: rgba(229, 101, 94, 0.12);
-  --trusted: rgba(109, 191, 127, 0.07);
-  --remake: rgba(229, 101, 94, 0.07);
+  --accent-soft: rgba(38, 124, 222, 0.14);
+  --green: #31a747;
+  --red: #e13055;
+  --red-strong: #e13055;
+  --red-soft: rgba(225, 48, 85, 0.12);
+  --trusted: rgba(49, 167, 71, 0.07);
+  --remake: rgba(225, 48, 85, 0.07);
   color-scheme: dark;
   /* Checkboxes and other native controls */
   accent-color: var(--accent-strong);
@@ -76,7 +80,7 @@ button.primary:hover:not(:disabled) {
 
 input,
 select {
-  background: var(--panel);
+  background: var(--input);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 10px;
@@ -94,7 +98,7 @@ select:focus {
 
 .error {
   background: var(--red-soft);
-  border: 1px solid rgba(229, 101, 94, 0.4);
+  border: 1px solid rgba(225, 48, 85, 0.4);
   border-radius: 6px;
   padding: 8px 12px;
   margin: 12px 0;
@@ -111,7 +115,7 @@ select:focus {
   width: 180px;
   flex-shrink: 0;
   background: var(--sidebar);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--divider);
   padding: 16px 10px;
   display: flex;
   flex-direction: column;
@@ -132,10 +136,10 @@ select:focus {
   padding: 8px 10px;
 }
 .nav-item:hover {
-  background: rgba(250, 249, 245, 0.05);
+  background: rgba(242, 242, 242, 0.05);
 }
 .nav-item.active {
-  background: var(--panel);
+  background: var(--selected);
   color: var(--text);
   font-weight: 600;
 }
@@ -210,7 +214,7 @@ h1 {
   color: var(--muted);
   font-size: 12px;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--divider);
   position: sticky;
   top: -20px;
   background: var(--bg);
@@ -229,7 +233,7 @@ h1 {
 }
 .results td {
   padding: 7px 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--divider);
   white-space: nowrap;
 }
 .results td.title {
@@ -271,7 +275,7 @@ h1 {
   width: 400px;
   flex-shrink: 0;
   background: var(--panel);
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--divider);
   padding: 20px;
   overflow: auto;
 }
@@ -337,7 +341,7 @@ button.icon {
   justify-content: space-between;
   gap: 12px;
   padding: 5px 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--divider);
 }
 .files li:not(.video) {
   opacity: 0.55;
@@ -359,7 +363,7 @@ button.icon {
 
 .notice {
   background: var(--accent-soft);
-  border: 1px solid rgba(217, 119, 87, 0.35);
+  border: 1px solid rgba(38, 124, 222, 0.35);
   border-radius: 6px;
   padding: 8px 12px;
   margin-bottom: 8px;
@@ -778,7 +782,7 @@ button.danger {
   align-items: center;
   gap: 10px;
   padding: 8px 6px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--divider);
   cursor: grab;
 }
 .episode:hover {
@@ -854,7 +858,7 @@ select.move-to {
   gap: 14px;
   padding: 10px 16px;
   background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--divider);
   flex-shrink: 0;
 }
 .player-back {
@@ -895,7 +899,7 @@ select.move-to {
   padding: 8px 16px;
   background: var(--red-soft);
   color: var(--red);
-  border-top: 1px solid rgba(229, 101, 94, 0.4);
+  border-top: 1px solid rgba(225, 48, 85, 0.4);
   flex-shrink: 0;
 }
 
@@ -905,7 +909,7 @@ select.move-to {
   gap: 10px;
   padding: 10px 16px;
   background: var(--panel);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--divider);
   flex-shrink: 0;
 }
 .player-controls .ctl {

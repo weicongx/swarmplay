@@ -28,7 +28,7 @@ function createWindow(): void {
     height: 820,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#262624', // matches --bg, so the window doesn't flash before the page paints
+    backgroundColor: '#181818', // matches --bg, so the window doesn't flash before the page paints
     autoHideMenuBar: true,
     icon: process.platform === 'win32' ? iconIco : icon,
     show: false,

@@ -719,5 +719,5 @@ function initials(name: string): string {
 function tileColor(name: string): string {
   let h = 0
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)!) % 360
-  return `linear-gradient(135deg, hsl(${h} 28% 34%), hsl(${(h + 30) % 360} 30% 23%))`
+  return `linear-gradient(135deg, hsl(${h} 18% 30%), hsl(${(h + 30) % 360} 18% 20%))`
 }
