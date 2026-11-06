@@ -1,13 +1,14 @@
 import { mkdir, rm, rmdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { dirname, join, resolve, sep } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import { EventEmitter } from 'events'
 import { BrowserWindow, shell } from 'electron'
-import type {
-  AddTorrentRequest,
-  AddTorrentResult,
-  TorrentStatus,
-  TorrentStatusInfo
+import {
+  VIDEO_EXT,
+  type AddTorrentRequest,
+  type AddTorrentResult,
+  type TorrentStatus,
+  type TorrentStatusInfo
 } from '@shared/types'
 import { getDb, getSettings } from './db'
 import { fetchTorrentFile } from './nyaa'
@@ -221,6 +222,65 @@ export function applyLimits(): void {
   }
 }
 
+export interface PlaybackTarget {
+  title: string
+  localPath: string
+  /** What mpv should open: the file on disk if complete, otherwise the local stream URL */
+  source: string
+  length: number
+}
+
+/**
+ * Get a file ready to play. Complete files play from disk; anything else is
+ * selected for download, its torrent started if needed, and streamed over HTTP.
+ */
+export async function preparePlayback(torrentId: number, fileIndex: number): Promise<PlaybackTarget> {
+  const entry = mustGet(torrentId)
+  const file = entry.meta.files[fileIndex]
+  if (!file) throw new Error('That file is not in this torrent')
+
+  const localPath = resolve(entry.row.save_path, file.path)
+  const target = { title: basename(file.path), localPath, length: file.length }
+  if ((entry.fileProgress[fileIndex] ?? 0) >= 1 && existsSync(localPath)) {
+    return { ...target, source: localPath }
+  }
+
+  if (!entry.selected.has(fileIndex)) {
+    entry.selected.add(fileIndex)
+    saveSelection(entry)
+    if (entry.torrent?.ready) entry.torrent.files[fileIndex].select()
+  }
+  if (!entry.torrent) {
+    setStatus(entry, 'downloading')
+    start(entry)
+  }
+
+  const torrent = await waitForReady(entry)
+  return { ...target, source: `http://127.0.0.1:${serverPort}${torrent.files[fileIndex].streamURL}` }
+}
+
+/** Selected video files of a torrent, in episode order. */
+export function playableFiles(torrentId: number): number[] {
+  const entry = mustGet(torrentId)
+  return entry.meta.files
+    .filter((f) => entry.selected.has(f.index) && VIDEO_EXT.test(f.path))
+    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
+    .map((f) => f.index)
+}
+
+function waitForReady(entry: Entry, timeoutMs = 60_000): Promise<WtTorrent> {
+  const deadline = Date.now() + timeoutMs
+  return new Promise((resolveReady, reject) => {
+    const check = (): void => {
+      if (entry.torrent?.ready) return resolveReady(entry.torrent)
+      if (entry.error) return reject(new Error(entry.error))
+      if (Date.now() > deadline) return reject(new Error('Timed out waiting for the torrent to start'))
+      setTimeout(check, 200)
+    }
+    check()
+  })
+}
+
 /** Save progress on quit. DB writes are synchronous, so this finishes before exit. */
 export function shutdownTorrents(): void {
   for (const entry of entries.values()) persistProgress(entry)
@@ -294,6 +354,14 @@ function statusOf(entry: Entry): TorrentStatusInfo {
     entry.fileProgress = active.files.map((f) => (f.length ? f.downloaded / f.length : 1))
   }
 
+  const playback = new Map(
+    (
+      getDb()
+        .prepare('SELECT file_index, position_sec, duration_sec, watched FROM episodes WHERE torrent_id = ?')
+        .all(row.id) as { file_index: number; position_sec: number; duration_sec: number | null; watched: number }[]
+    ).map((e) => [e.file_index, e])
+  )
+
   let length = 0
   let downloaded = 0
   const files = meta.files.map((f) => {
@@ -303,13 +371,18 @@ function statusOf(entry: Entry): TorrentStatusInfo {
       length += f.length
       downloaded += f.length * progress
     }
+    const ep = playback.get(f.index)
     return {
       index: f.index,
       path: f.path,
       length: f.length,
       progress,
       selected,
-      streamUrl: active ? `http://127.0.0.1:${serverPort}${active.files[f.index].streamURL}` : null
+      streamUrl: active ? `http://127.0.0.1:${serverPort}${active.files[f.index].streamURL}` : null,
+      isVideo: VIDEO_EXT.test(f.path),
+      positionSec: ep?.position_sec ?? 0,
+      durationSec: ep?.duration_sec ?? null,
+      watched: ep?.watched === 1
     }
   })
 

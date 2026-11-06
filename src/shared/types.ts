@@ -67,6 +67,11 @@ export interface TorrentFileStatus {
   selected: boolean
   /** Local HTTP URL that streams the file while it downloads; null when the torrent isn't active. */
   streamUrl: string | null
+  isVideo: boolean
+  /** Saved playback position in seconds (0 if never played or finished) */
+  positionSec: number
+  durationSec: number | null
+  watched: boolean
 }
 
 export interface TorrentStatusInfo {
@@ -114,7 +119,21 @@ export interface Settings {
   downloadLimitKiB: number
   /** KiB/s, 0 = unlimited */
   uploadLimitKiB: number
+  /** Full path to mpv.exe; empty means find it automatically */
+  mpvPath: string
+  /** Play the torrent's next episode when one finishes */
+  autoplayNext: boolean
 }
+
+export interface PlayerInfo {
+  /** The mpv.exe that will be used, or null if none was found */
+  mpvPath: string | null
+}
+
+export const VIDEO_EXT = /\.(mkv|mp4|avi|webm|m4v|mov|ts|wmv)$/i
+
+/** Playback only resumes from a saved position past this many seconds. */
+export const RESUME_MIN_SEC = 10
 
 /** The API the preload script exposes on `window.api`. */
 export interface AppApi {
@@ -132,6 +151,14 @@ export interface AppApi {
   resumeTorrent(id: number): Promise<void>
   removeTorrent(id: number, deleteFiles: boolean): Promise<void>
   showTorrentInFolder(id: number): Promise<void>
+
+  /** Open a file of a torrent in mpv, streaming it if it isn't fully downloaded. */
+  play(torrentId: number, fileIndex: number): Promise<void>
+  /** Add a torrent (if needed) and immediately start streaming one of its files. */
+  streamNow(req: AddTorrentRequest, fileIndex: number): Promise<void>
+  setWatched(torrentId: number, fileIndex: number, watched: boolean): Promise<void>
+  getPlayerInfo(): Promise<PlayerInfo>
+  pickMpv(): Promise<string | null>
   /** Called about once a second with every torrent's status. Returns an unsubscribe function. */
   onTorrentsUpdate(cb: (torrents: TorrentStatusInfo[]) => void): () => void
 }

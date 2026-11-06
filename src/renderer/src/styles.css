@@ -491,6 +491,30 @@ button.danger {
   flex-shrink: 0;
 }
 
+.torrent-files .file-name {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.torrent-files li.watched .file-name {
+  color: var(--muted);
+}
+.play-file {
+  flex-shrink: 0;
+  padding: 0 7px;
+  font-size: 10px;
+  line-height: 18px;
+  color: var(--accent);
+}
+.watched-badge {
+  color: var(--green);
+}
+.resume-at {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Settings */
 
 .settings label.inline {
@@ -528,6 +552,9 @@ button.danger {
 }
 .settings .row input {
   flex: 1;
+}
+.error-text {
+  color: var(--red);
 }
 .saved {
   font-size: 13px;

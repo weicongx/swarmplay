@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { NYAA_CATEGORIES, NYAA_FILTERS, type NyaaResult, type TorrentInfo } from '@shared/types'
+import { NYAA_CATEGORIES, NYAA_FILTERS, VIDEO_EXT, type NyaaResult, type TorrentInfo } from '@shared/types'
 import { displayPath, errorMessage, formatAge, formatBytes, magnetFor } from '../format'
 
 type SortKey = 'date' | 'seeders' | 'size' | 'downloads'
@@ -10,8 +10,6 @@ const SORTS: { id: SortKey; label: string }[] = [
   { id: 'downloads', label: 'Most downloaded' },
   { id: 'size', label: 'Largest' }
 ]
-
-const VIDEO_EXT = /\.(mkv|mp4|avi|webm|m4v)$/i
 
 export default function SearchPage({ onOpenDownloads }: { onOpenDownloads: () => void }): JSX.Element {
   const [query, setQuery] = useState('')
@@ -209,16 +207,29 @@ function DetailPanel({
     setCopied(true)
   }
 
+  const request = { torrentUrl: result.torrentUrl, nyaaId: result.id, fileIndexes: [...checked] }
+
   async function download(): Promise<void> {
     setAdding(true)
     setError(null)
     try {
-      const res = await window.api.addTorrent({
-        torrentUrl: result.torrentUrl,
-        nyaaId: result.id,
-        fileIndexes: [...checked]
-      })
+      const res = await window.api.addTorrent(request)
       setAdded(res.existed ? 'Already in Downloads; any new files were added to it.' : 'Downloading.')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function streamNow(): Promise<void> {
+    if (!firstVideo) return
+    setAdding(true)
+    setError(null)
+    setAdded(null)
+    try {
+      await window.api.streamNow(request, firstVideo.index)
+      setAdded('Opening in mpv. Playback starts once the first pieces arrive.')
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -241,6 +252,8 @@ function DetailPanel({
     () => info?.files.slice().sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true })),
     [info]
   )
+  // Stream now plays the first ticked episode; the rest keep downloading behind it.
+  const firstVideo = files?.find((f) => checked.has(f.index) && VIDEO_EXT.test(f.path))
 
   return (
     <aside className="detail">
@@ -278,7 +291,11 @@ function DetailPanel({
               ? `Download ${checked.size} file${checked.size === 1 ? '' : 's'}`
               : 'Download'}
         </button>
-        <button disabled title="Playback arrives in phase 3">
+        <button
+          disabled={!firstVideo || adding}
+          onClick={streamNow}
+          title={firstVideo ? `Play ${displayPath(firstVideo.path, info!.name)} while it downloads` : undefined}
+        >
           Stream now
         </button>
       </div>

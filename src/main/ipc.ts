@@ -11,6 +11,7 @@ import {
   resumeTorrent,
   showTorrentInFolder
 } from './torrent'
+import { findMpv, play, setWatched } from './player'
 
 export function registerIpc(): void {
   ipcMain.handle('nyaa:search', async (_e, params: NyaaSearchParams) => {
@@ -39,6 +40,24 @@ export function registerIpc(): void {
     removeTorrent(id, deleteFiles === true)
   )
   ipcMain.handle('torrents:showInFolder', (_e, id: number) => showTorrentInFolder(id))
+
+  ipcMain.handle('player:play', (_e, torrentId: number, fileIndex: number) => play(torrentId, fileIndex))
+  ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
+    const { id } = await addTorrent(req)
+    await play(id, fileIndex)
+  })
+  ipcMain.handle('player:setWatched', (_e, torrentId: number, fileIndex: number, watched: boolean) =>
+    setWatched(torrentId, fileIndex, watched === true)
+  )
+  ipcMain.handle('player:info', () => ({ mpvPath: findMpv() }))
+  ipcMain.handle('dialog:pickMpv', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const result = await dialog.showOpenDialog(win!, {
+      properties: ['openFile'],
+      filters: [{ name: 'mpv', extensions: ['exe'] }]
+    })
+    return result.canceled ? null : result.filePaths[0]
+  })
 
   ipcMain.handle('dialog:pickFolder', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)

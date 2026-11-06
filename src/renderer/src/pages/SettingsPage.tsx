@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
-import { NYAA_CATEGORIES, NYAA_FILTERS, type Settings } from '@shared/types'
+import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings } from '@shared/types'
 
 export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
+  const [player, setPlayer] = useState<PlayerInfo | null>(null)
 
   useEffect(() => {
     window.api.getSettings().then(setSettings)
+    window.api.getPlayerInfo().then(setPlayer)
   }, [])
 
   if (!settings) return <div className="page" />
 
   async function update(patch: Partial<Settings>): Promise<void> {
     setSettings(await window.api.setSettings(patch))
+    if ('mpvPath' in patch) setPlayer(await window.api.getPlayerInfo())
     setSaved(true)
     setTimeout(() => setSaved(false), 1200)
   }
@@ -37,6 +40,38 @@ export default function SettingsPage(): JSX.Element {
           </button>
         </div>
         <small className="muted">Each series gets its own subfolder here.</small>
+      </label>
+
+      <label>
+        <span>mpv player</span>
+        <div className="row">
+          <input value={settings.mpvPath} placeholder="Find automatically" readOnly />
+          <button
+            onClick={async () => {
+              const exe = await window.api.pickMpv()
+              if (exe) update({ mpvPath: exe })
+            }}
+          >
+            Choose…
+          </button>
+          {settings.mpvPath && <button onClick={() => update({ mpvPath: '' })}>Auto</button>}
+        </div>
+        <small className={player?.mpvPath ? 'muted' : 'error-text'}>
+          {player === null
+            ? ''
+            : player.mpvPath
+              ? `Using ${player.mpvPath}`
+              : 'mpv not found. Install it with "winget install shinchiro.mpv" or choose mpv.exe.'}
+        </small>
+      </label>
+
+      <label className="inline">
+        <input
+          type="checkbox"
+          checked={settings.autoplayNext}
+          onChange={(e) => update({ autoplayNext: e.target.checked })}
+        />
+        <span>Play the next episode automatically</span>
       </label>
 
       <label>
@@ -65,6 +100,20 @@ export default function SettingsPage(): JSX.Element {
         </select>
       </label>
 
+      <label>
+        <span>Default filter</span>
+        <select
+          value={settings.defaultFilter}
+          onChange={(e) => update({ defaultFilter: Number(e.target.value) })}
+        >
+          {NYAA_FILTERS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <label className="inline">
         <input
           type="checkbox"
@@ -86,20 +135,6 @@ export default function SettingsPage(): JSX.Element {
           onSave={(v) => update({ uploadLimitKiB: v })}
         />
       </div>
-
-      <label>
-        <span>Default filter</span>
-        <select
-          value={settings.defaultFilter}
-          onChange={(e) => update({ defaultFilter: Number(e.target.value) })}
-        >
-          {NYAA_FILTERS.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-      </label>
     </div>
   )
 }

@@ -16,6 +16,13 @@ const api: AppApi = {
   resumeTorrent: (id) => ipcRenderer.invoke('torrents:resume', id),
   removeTorrent: (id, deleteFiles) => ipcRenderer.invoke('torrents:remove', id, deleteFiles),
   showTorrentInFolder: (id) => ipcRenderer.invoke('torrents:showInFolder', id),
+
+  play: (torrentId, fileIndex) => ipcRenderer.invoke('player:play', torrentId, fileIndex),
+  streamNow: (req, fileIndex) => ipcRenderer.invoke('player:streamNow', req, fileIndex),
+  setWatched: (torrentId, fileIndex, watched) =>
+    ipcRenderer.invoke('player:setWatched', torrentId, fileIndex, watched),
+  getPlayerInfo: () => ipcRenderer.invoke('player:info'),
+  pickMpv: () => ipcRenderer.invoke('dialog:pickMpv'),
   onTorrentsUpdate: (cb) => {
     const listener = (_e: IpcRendererEvent, list: TorrentStatusInfo[]): void => cb(list)
     ipcRenderer.on('torrents:update', listener)

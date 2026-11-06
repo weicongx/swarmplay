@@ -96,7 +96,9 @@ function defaultSettings(): Settings {
     libraryRoot: join(app.getPath('videos'), 'Anime'),
     seedAfterDownload: true,
     downloadLimitKiB: 0,
-    uploadLimitKiB: 0
+    uploadLimitKiB: 0,
+    mpvPath: '',
+    autoplayNext: true
   }
 }
 

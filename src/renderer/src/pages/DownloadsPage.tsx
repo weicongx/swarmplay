@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { TorrentStatus, TorrentStatusInfo } from '@shared/types'
-import { displayPath, errorMessage, formatBytes, formatDuration, formatSpeed } from '../format'
+import { RESUME_MIN_SEC, type TorrentFileStatus, type TorrentStatus, type TorrentStatusInfo } from '@shared/types'
+import { displayPath, errorMessage, formatBytes, formatClock, formatDuration, formatSpeed } from '../format'
 
 const STATUS_LABEL: Record<TorrentStatus, string> = {
   starting: 'Checking',
@@ -51,15 +51,18 @@ function TorrentCard({
   t: TorrentStatusInfo
   run: (fn: () => Promise<void>) => () => void
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(false)
+  const selectedFiles = t.files
+    .filter((f) => f.selected)
+    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
+  const [expanded, setExpanded] = useState(selectedFiles.length > 1)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [deleteFiles, setDeleteFiles] = useState(false)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
 
   const active = t.status === 'downloading' || t.status === 'seeding' || t.status === 'starting'
-  const selectedFiles = t.files
-    .filter((f) => f.selected)
-    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
+  // The episode "Play" picks: first unwatched one, or the first if all are watched.
+  const videos = selectedFiles.filter((f) => f.isVideo)
+  const next = videos.find((f) => !f.watched) ?? videos[0]
 
   async function copyStream(index: number, url: string): Promise<void> {
     await navigator.clipboard.writeText(url)
@@ -103,6 +106,16 @@ function TorrentCard({
       {t.error && <div className="error">{t.error}</div>}
 
       <div className="torrent-actions">
+        {next && (
+          <button
+            className="primary"
+            title={displayPath(next.path, t.name)}
+            onClick={run(() => window.api.play(t.id, next.index))}
+          >
+            {next.positionSec > RESUME_MIN_SEC ? `Continue at ${formatClock(next.positionSec)}` : 'Play'}
+            {videos.length > 1 && ` · ${shortName(displayPath(next.path, t.name))}`}
+          </button>
+        )}
         {active ? (
           <button onClick={run(() => window.api.pauseTorrent(t.id))}>Pause</button>
         ) : (
@@ -130,19 +143,32 @@ function TorrentCard({
       {expanded && (
         <ul className="files torrent-files">
           {selectedFiles.map((f) => (
-            <li key={f.index}>
-              <span className="file-name">{displayPath(f.path, t.name)}</span>
+            <li key={f.index} className={f.watched ? 'watched' : ''}>
+              <span className="file-name">
+                {f.isVideo && (
+                  <button className="play-file" title="Play" onClick={run(() => window.api.play(t.id, f.index))}>
+                    ▶
+                  </button>
+                )}
+                {displayPath(f.path, t.name)}
+              </span>
               <span className="file-progress">
+                {f.isVideo && <WatchState f={f} />}
                 <span className="muted">
-                  {(f.progress * 100).toFixed(0)}% of {formatBytes(f.length)}
+                  {f.progress >= 1 ? formatBytes(f.length) : `${(f.progress * 100).toFixed(0)}% of ${formatBytes(f.length)}`}
                 </span>
+                {f.isVideo && (
+                  <button className="link" onClick={run(() => window.api.setWatched(t.id, f.index, !f.watched))}>
+                    {f.watched ? 'Mark unwatched' : 'Mark watched'}
+                  </button>
+                )}
                 {f.streamUrl && (
                   <button
                     className="link"
                     title="Paste into mpv or VLC to watch while it downloads"
                     onClick={() => copyStream(f.index, f.streamUrl!)}
                   >
-                    {copiedIndex === f.index ? 'Copied' : 'Copy stream link'}
+                    {copiedIndex === f.index ? 'Copied' : 'Copy link'}
                   </button>
                 )}
               </span>
@@ -152,4 +178,24 @@ function TorrentCard({
       )}
     </div>
   )
+}
+
+function WatchState({ f }: { f: TorrentFileStatus }): JSX.Element | null {
+  if (f.watched) return <span className="watched-badge">Watched</span>
+  if (f.positionSec > RESUME_MIN_SEC) {
+    return (
+      <span className="resume-at">
+        {formatClock(f.positionSec)}
+        {f.durationSec ? ` / ${formatClock(f.durationSec)}` : ''}
+      </span>
+    )
+  }
+  return null
+}
+
+/** "[Group] Show - 03 (1080p) [ABCD].mkv" → "Show - 03", for button labels. */
+function shortName(name: string): string {
+  const base = name.split('/').pop()!.replace(/\.[^.]+$/, '')
+  const cleaned = base.replace(/\[[^\]]*\]|\([^)]*\)/g, '').replace(/\s+/g, ' ').trim()
+  return (cleaned || base).slice(0, 40)
 }

@@ -3,6 +3,7 @@ import { join } from 'path'
 import { getDb } from './db'
 import { registerIpc } from './ipc'
 import { initTorrents, shutdownTorrents } from './torrent'
+import { stopPlayer } from './player'
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -46,7 +47,10 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('will-quit', shutdownTorrents)
+app.on('will-quit', () => {
+  stopPlayer()
+  shutdownTorrents()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

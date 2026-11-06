@@ -23,6 +23,15 @@ export function formatDuration(seconds: number): string {
   return `${Math.floor(h / 24)}d`
 }
 
+/** 83.4 → "1:23", 3725 → "1:02:05" */
+export function formatClock(seconds: number): string {
+  const s = Math.floor(seconds)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
+
 /** Drop the torrent's own folder name from a multi-file path for display. */
 export function displayPath(path: string, torrentName: string): string {
   return path.startsWith(`${torrentName}/`) ? path.slice(torrentName.length + 1) : path
