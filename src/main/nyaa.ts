@@ -3,7 +3,7 @@ import type { NyaaResult, NyaaSearchParams, TorrentInfo } from '@shared/types'
 import { parseRelease } from './release'
 import { parseTorrentFile } from './torrentFile'
 
-const USER_AGENT = 'swarmplay/1.2 (+desktop)'
+const USER_AGENT = 'swarmplay/1.3 (+desktop)'
 const TIMEOUT_MS = 15_000
 
 const parser = new XMLParser({
