@@ -1,17 +1,28 @@
+/* Warm neutrals and a terracotta accent, after the Claude app's dark theme. */
 :root {
-  --bg: #0f1115;
-  --panel: #161922;
-  --panel-2: #1d212c;
-  --border: #272c3a;
-  --text: #e6e8ee;
-  --muted: #8a90a2;
-  --accent: #7c8cff;
-  --accent-text: #0f1115;
-  --green: #4ade80;
-  --red: #f87171;
-  --trusted: rgba(74, 222, 128, 0.07);
-  --remake: rgba(248, 113, 113, 0.07);
+  --bg: #262624;
+  --sidebar: #1f1e1d;
+  --panel: #30302e;
+  --panel-2: #3a3a37;
+  --border: #45443f;
+  --text: #faf9f5;
+  --muted: #a6a39b;
+  /* Accent for text, outlines and progress */
+  --accent: #d97757;
+  /* Filled buttons and badges: deep enough for white text to stay readable */
+  --accent-strong: #b8583a;
+  --accent-strong-hover: #a84f33;
+  --accent-text: #ffffff;
+  --accent-soft: rgba(217, 119, 87, 0.12);
+  --green: #6dbf7f;
+  --red: #e5655e;
+  --red-strong: #b8433d;
+  --red-soft: rgba(229, 101, 94, 0.12);
+  --trusted: rgba(109, 191, 127, 0.07);
+  --remake: rgba(229, 101, 94, 0.07);
   color-scheme: dark;
+  /* Checkboxes and other native controls */
+  accent-color: var(--accent-strong);
 }
 
 * {
@@ -53,10 +64,14 @@ button:disabled {
   cursor: not-allowed;
 }
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
   color: var(--accent-text);
   font-weight: 600;
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent-strong-hover);
+  border-color: var(--accent-strong-hover);
 }
 
 input,
@@ -78,8 +93,8 @@ select:focus {
 }
 
 .error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.4);
+  background: var(--red-soft);
+  border: 1px solid rgba(229, 101, 94, 0.4);
   border-radius: 6px;
   padding: 8px 12px;
   margin: 12px 0;
@@ -95,7 +110,7 @@ select:focus {
 .sidebar {
   width: 180px;
   flex-shrink: 0;
-  background: var(--panel);
+  background: var(--sidebar);
   border-right: 1px solid var(--border);
   padding: 16px 10px;
   display: flex;
@@ -117,11 +132,11 @@ select:focus {
   padding: 8px 10px;
 }
 .nav-item:hover {
-  background: var(--panel-2);
+  background: rgba(250, 249, 245, 0.05);
 }
 .nav-item.active {
-  background: var(--panel-2);
-  color: var(--accent);
+  background: var(--panel);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -343,8 +358,8 @@ button.icon {
 }
 
 .notice {
-  background: rgba(124, 140, 255, 0.1);
-  border: 1px solid rgba(124, 140, 255, 0.35);
+  background: var(--accent-soft);
+  border: 1px solid rgba(217, 119, 87, 0.35);
   border-radius: 6px;
   padding: 8px 12px;
   margin-bottom: 8px;
@@ -359,8 +374,8 @@ button.link {
 }
 
 button.danger {
-  background: var(--red);
-  border-color: var(--red);
+  background: var(--red-strong);
+  border-color: var(--red-strong);
   color: var(--accent-text);
   font-weight: 600;
 }
@@ -375,7 +390,7 @@ button.danger {
   align-items: center;
 }
 .badge {
-  background: var(--accent);
+  background: var(--accent-strong);
   color: var(--accent-text);
   border-radius: 999px;
   font-size: 11px;
@@ -710,7 +725,7 @@ button.danger {
 .folder-card.drop-over,
 .crumb.drop-over {
   border-color: var(--accent);
-  background: rgba(124, 140, 255, 0.12);
+  background: var(--accent-soft);
 }
 .folder-tile {
   aspect-ratio: 2 / 3;
@@ -878,9 +893,9 @@ select.move-to {
 
 .player-error {
   padding: 8px 16px;
-  background: rgba(248, 113, 113, 0.15);
+  background: var(--red-soft);
   color: var(--red);
-  border-top: 1px solid rgba(248, 113, 113, 0.4);
+  border-top: 1px solid rgba(229, 101, 94, 0.4);
   flex-shrink: 0;
 }
 

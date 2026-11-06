@@ -715,9 +715,9 @@ function initials(name: string): string {
   return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? '?').slice(0, 2)).toUpperCase()
 }
 
-/** A stable muted color per folder name, so each series has its own tile. */
+/** A stable, muted color per folder name, so each series has its own tile. */
 function tileColor(name: string): string {
   let h = 0
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)!) % 360
-  return `linear-gradient(135deg, hsl(${h} 45% 32%), hsl(${(h + 40) % 360} 50% 22%))`
+  return `linear-gradient(135deg, hsl(${h} 28% 34%), hsl(${(h + 30) % 360} 30% 23%))`
 }
