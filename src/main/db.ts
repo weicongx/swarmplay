@@ -70,7 +70,7 @@ let db: DatabaseSync | null = null
 
 export function getDb(): DatabaseSync {
   if (db) return db
-  db = new DatabaseSync(join(app.getPath('userData'), 'anime.db'))
+  db = new DatabaseSync(join(app.getPath('userData'), 'swarmplay.db'))
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
 
   const { user_version } = db.prepare('PRAGMA user_version').get() as { user_version: number }

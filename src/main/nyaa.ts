@@ -2,7 +2,7 @@ import { XMLParser } from 'fast-xml-parser'
 import type { NyaaResult, NyaaSearchParams, TorrentInfo } from '@shared/types'
 import { parseTorrentFile } from './torrentFile'
 
-const USER_AGENT = 'anime-app/0.1 (+desktop)'
+const USER_AGENT = 'swarmplay/0.1 (+desktop)'
 const TIMEOUT_MS = 15_000
 
 const parser = new XMLParser({

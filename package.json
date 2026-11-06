@@ -1,5 +1,6 @@
 {
-  "name": "anime-app",
+  "name": "swarmplay",
+  "productName": "Swarmplay",
   "version": "0.1.0",
   "description": "Search nyaa.si, download torrents, watch and organize anime",
   "main": "./out/main/index.js",

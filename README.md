@@ -1,6 +1,6 @@
-# Anime
+# Swarmplay
 
-Desktop app: search nyaa.si, download torrents, watch episodes, and organize them into series folders.
+Swarmplay is a desktop app: search nyaa.si, download torrents, watch episodes, and organize them into series folders.
 
 ## Run
 
@@ -17,7 +17,7 @@ npm run dev
 - `src/preload/` – exposes `window.api` (typed by `src/shared/types.ts`)
 - `src/renderer/` – React UI
 
-The database lives at `%APPDATA%/anime-app/anime.db`.
+The database lives at `%APPDATA%/Swarmplay/swarmplay.db`.
 
 ## Status
 

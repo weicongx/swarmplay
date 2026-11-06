@@ -27,7 +27,7 @@ export default function App(): JSX.Element {
   return (
     <div className="app">
       <nav className="sidebar">
-        <div className="brand">Anime</div>
+        <div className="brand">Swarmplay</div>
         {NAV.map((n) => (
           <button
             key={n.id}
