@@ -30,6 +30,7 @@ const api: AppApi = {
   setWatched: (torrentId, fileIndex, watched) =>
     ipcRenderer.invoke('player:setWatched', torrentId, fileIndex, watched),
   getPlayerInfo: () => ipcRenderer.invoke('player:info'),
+  getVersion: () => ipcRenderer.invoke('app:version'),
   pickMpv: () => ipcRenderer.invoke('dialog:pickMpv'),
 
   getLibrary: () => ipcRenderer.invoke('library:get'),

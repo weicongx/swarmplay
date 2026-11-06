@@ -6,10 +6,12 @@ export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
   const [player, setPlayer] = useState<PlayerInfo | null>(null)
+  const [version, setVersion] = useState('')
 
   useEffect(() => {
     window.api.getSettings().then(setSettings)
     window.api.getPlayerInfo().then(setPlayer)
+    window.api.getVersion().then(setVersion)
   }, [])
 
   if (!settings) return <div className="page" />
@@ -169,6 +171,8 @@ export default function SettingsPage(): JSX.Element {
           onSave={(v) => update({ uploadLimitKiB: v })}
         />
       </div>
+
+      {version && <p className="muted version">Swarmplay {version}</p>}
     </div>
   )
 }

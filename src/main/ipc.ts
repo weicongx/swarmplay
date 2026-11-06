@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { AddTorrentRequest, NyaaSearchParams, PlayerCommand, Settings, VideoRect } from '@shared/types'
 import { getRecentSearches, getSettings, recordSearch, setSettings } from './db'
 import { getTorrentInfo, searchNyaa } from './nyaa'
@@ -77,6 +77,7 @@ export function registerIpc(): void {
     setWatched(torrentId, fileIndex, watched === true)
   )
   ipcMain.handle('player:info', async () => ({ mpvPath: findMpv(), nvidia: await hasNvidiaGpu() }))
+  ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('dialog:pickMpv', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const result = await dialog.showOpenDialog(win!, {

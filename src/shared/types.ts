@@ -280,6 +280,7 @@ export interface AppApi {
   setWatched(torrentId: number, fileIndex: number, watched: boolean): Promise<void>
   getPlayerInfo(): Promise<PlayerInfo>
   pickMpv(): Promise<string | null>
+  getVersion(): Promise<string>
 
   getLibrary(): Promise<LibraryData>
   createFolder(name: string, parentId: number | null): Promise<number>
