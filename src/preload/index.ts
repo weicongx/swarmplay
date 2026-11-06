@@ -30,6 +30,14 @@ const api: AppApi = {
   deleteFolder: (id, deleteDownloads) => ipcRenderer.invoke('library:deleteFolder', id, deleteDownloads),
   moveFolder: (id, parentId) => ipcRenderer.invoke('library:moveFolder', id, parentId),
   moveEpisodes: (ids, folderId) => ipcRenderer.invoke('library:moveEpisodes', ids, folderId),
+  suggestFolder: (series) => ipcRenderer.invoke('library:suggestFolder', series),
+  searchAniList: (query) => ipcRenderer.invoke('anilist:search', query),
+  linkFolder: (folderId, anilistId) => ipcRenderer.invoke('library:linkFolder', folderId, anilistId),
+  onNavigate: (cb) => {
+    const listener = (_e: IpcRendererEvent, to: Parameters<typeof cb>[0]): void => cb(to)
+    ipcRenderer.on('app:navigate', listener)
+    return () => ipcRenderer.removeListener('app:navigate', listener)
+  },
   onTorrentsUpdate: (cb) => {
     const listener = (_e: IpcRendererEvent, list: TorrentStatusInfo[]): void => cb(list)
     ipcRenderer.on('torrents:update', listener)

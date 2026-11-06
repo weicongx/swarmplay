@@ -74,6 +74,24 @@ export default function SettingsPage(): JSX.Element {
         <span>Play the next episode automatically</span>
       </label>
 
+      <label className="inline">
+        <input
+          type="checkbox"
+          checked={settings.closeToTray}
+          onChange={(e) => update({ closeToTray: e.target.checked })}
+        />
+        <span>Keep running in the tray when the window is closed</span>
+      </label>
+
+      <label className="inline">
+        <input
+          type="checkbox"
+          checked={settings.notifyOnDownload}
+          onChange={(e) => update({ notifyOnDownload: e.target.checked })}
+        />
+        <span>Notify me when an episode finishes downloading</span>
+      </label>
+
       <label>
         <span>nyaa address</span>
         <input

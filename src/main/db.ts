@@ -63,6 +63,21 @@ const MIGRATIONS: string[] = [
   ALTER TABLE torrents ADD COLUMN file_progress TEXT;
   ALTER TABLE torrents ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE torrents ADD COLUMN completed_at INTEGER;
+  `,
+  `
+  -- AniList link for a series folder. anilist_titles is a JSON array of every
+  -- title and synonym, so releases in another language find the same folder.
+  ALTER TABLE folders ADD COLUMN anilist_id INTEGER;
+  ALTER TABLE folders ADD COLUMN anilist_titles TEXT;
+  ALTER TABLE folders ADD COLUMN anilist_meta TEXT;
+  ALTER TABLE folders ADD COLUMN anilist_checked_at INTEGER;
+  ALTER TABLE episodes ADD COLUMN last_played_at INTEGER;
+
+  CREATE TABLE anilist_cache (
+    query      TEXT PRIMARY KEY,
+    json       TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
   `
 ]
 
@@ -98,7 +113,9 @@ function defaultSettings(): Settings {
     downloadLimitKiB: 0,
     uploadLimitKiB: 0,
     mpvPath: '',
-    autoplayNext: true
+    autoplayNext: true,
+    closeToTray: true,
+    notifyOnDownload: true
   }
 }
 
@@ -107,8 +124,12 @@ export function getSettings(): Settings {
     key: string
     value: string
   }[]
-  const stored = Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)]))
-  return { ...defaultSettings(), ...stored }
+  const defaults = defaultSettings()
+  // The table also holds internal flags (see firstTime), so keep only real settings.
+  const stored = Object.fromEntries(
+    rows.filter((r) => r.key in defaults).map((r) => [r.key, JSON.parse(r.value)])
+  )
+  return { ...defaults, ...stored }
 }
 
 export function setSettings(patch: Partial<Settings>): Settings {
@@ -120,6 +141,14 @@ export function setSettings(patch: Partial<Settings>): Settings {
     if (allowed.includes(key) && value !== undefined) upsert.run(key, JSON.stringify(value))
   }
   return getSettings()
+}
+
+/** True the first time it's called for `key`, ever; for one-time tips. */
+export function firstTime(key: string): boolean {
+  const res = getDb()
+    .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING')
+    .run(`once:${key}`, 'true')
+  return res.changes > 0
 }
 
 export function recordSearch(query: string): void {

@@ -16,6 +16,17 @@ const NAV: { id: Page; label: string }[] = [
 export default function App(): JSX.Element {
   const [page, setPage] = useState<Page>('search')
   const [activeDownloads, setActiveDownloads] = useState(0)
+  // Bumping `n` remounts the library at the requested folder (e.g. from a notification click).
+  const [libraryTarget, setLibraryTarget] = useState<{ folderId: number | null; n: number }>({ folderId: null, n: 0 })
+
+  useEffect(
+    () =>
+      window.api.onNavigate((to) => {
+        setLibraryTarget((t) => ({ folderId: to.folderId, n: t.n + 1 }))
+        setPage(to.page)
+      }),
+    []
+  )
 
   useEffect(
     () =>
@@ -46,7 +57,7 @@ export default function App(): JSX.Element {
           <SearchPage onOpenDownloads={() => setPage('downloads')} />
         </div>
         {page === 'downloads' && <DownloadsPage />}
-        {page === 'library' && <LibraryPage />}
+        {page === 'library' && <LibraryPage key={libraryTarget.n} initialFolder={libraryTarget.folderId} />}
         {page === 'settings' && <SettingsPage />}
       </main>
     </div>

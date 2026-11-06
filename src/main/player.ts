@@ -84,12 +84,13 @@ export function stopPlayer(): void {
 function rememberEpisode(torrentId: number, fileIndex: number, target: PlaybackTarget): number {
   getDb()
     .prepare(
-      `INSERT INTO episodes (torrent_id, file_index, title, file_path, size_bytes)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO episodes (torrent_id, file_index, title, file_path, size_bytes, last_played_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(torrent_id, file_index) DO UPDATE SET
-         title = excluded.title, file_path = excluded.file_path, size_bytes = excluded.size_bytes`
+         title = excluded.title, file_path = excluded.file_path, size_bytes = excluded.size_bytes,
+         last_played_at = excluded.last_played_at`
     )
-    .run(torrentId, fileIndex, target.title, target.localPath, target.length)
+    .run(torrentId, fileIndex, target.title, target.localPath, target.length, Date.now())
 
   const ep = getDb()
     .prepare('SELECT position_sec, duration_sec, watched FROM episodes WHERE torrent_id = ? AND file_index = ?')

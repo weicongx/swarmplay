@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
-import { compareEpisodes, flattenFolders } from '@shared/folders'
+import { compareEpisodes, flattenFolders, splitSeason } from '@shared/folders'
 import {
   RESUME_MIN_SEC,
+  type AniListMedia,
   type EpisodeInfo,
   type FolderInfo,
   type LibraryData,
@@ -15,10 +16,10 @@ type Location = number | null | 'unsorted'
 type DragItem = { type: 'episode'; id: number } | { type: 'folder'; id: number }
 const DRAG_MIME = 'application/x-swarmplay'
 
-export default function LibraryPage(): JSX.Element {
+export default function LibraryPage({ initialFolder = null }: { initialFolder?: number | null }): JSX.Element {
   const [lib, setLib] = useState<LibraryData | null>(null)
   const [torrents, setTorrents] = useState<Map<number, TorrentStatusInfo>>(new Map())
-  const [at, setAt] = useState<Location>(null)
+  const [at, setAt] = useState<Location>(initialFolder)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(() => window.api.getLibrary().then(setLib), [])
@@ -84,6 +85,10 @@ export default function LibraryPage(): JSX.Element {
           <h1>{at === 'unsorted' ? 'Unsorted' : 'Library'}</h1>
         </div>
       )}
+
+      {at === null && <ContinueWatching lib={lib} onPlay={(e) => run(() => window.api.play(e.torrentId, e.fileIndex))} />}
+
+      {at === null && (lib.folders.length > 0 || unsortedCount > 0) && <h2 className="section-title">Series</h2>}
 
       {at !== 'unsorted' && (
         <FolderGrid
@@ -173,13 +178,19 @@ function FolderHeader({
   const [name, setName] = useState(folder.name)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteDownloads, setDeleteDownloads] = useState(false)
+  const [picking, setPicking] = useState(false)
 
   const next = episodes.find((e) => !e.watched) ?? episodes[0]
   const watched = episodes.filter((e) => e.watched).length
   const nested = subtreeEpisodes(lib, folder.id).length
+  const a = folder.anilist
 
   return (
-    <div className="library-head">
+    <div className="library-head folder-head">
+      <div className="folder-head-art">
+        <FolderArt folder={folder} />
+      </div>
+      <div className="folder-head-body">
       {renaming ? (
         <form
           className="rename"
@@ -200,8 +211,21 @@ function FolderHeader({
       ) : (
         <h1>{folder.name}</h1>
       )}
+      {a && (
+        <p className="anilist-line">
+          <button className="link" onClick={() => window.api.openExternal(`https://anilist.co/anime/${a.id}`)}>
+            {a.title}
+          </button>
+          {a.english && a.english !== a.title && <span className="muted"> · {a.english}</span>}
+          <span className="muted">
+            {[a.format?.replace('_', ' '), a.year].filter(Boolean).length > 0 &&
+              ` · ${[a.format?.replace('_', ' '), a.year].filter(Boolean).join(' ')}`}
+          </span>
+        </p>
+      )}
       <p className="muted">
         {episodes.length} episode{episodes.length === 1 ? '' : 's'}
+        {a?.episodes ? ` of ${a.episodes}` : ''}
         {episodes.length > 0 && ` · ${watched} watched`}
       </p>
 
@@ -222,6 +246,7 @@ function FolderHeader({
         >
           Rename
         </button>
+        <button onClick={() => setPicking(!picking)}>{a ? 'Change AniList match' : 'Find on AniList'}</button>
         {!confirmDelete ? (
           <button onClick={() => setConfirmDelete(true)}>Delete folder</button>
         ) : (
@@ -242,6 +267,164 @@ function FolderHeader({
           </span>
         )}
       </div>
+      {picking && (
+        <AniListPicker
+          folder={folder}
+          onDone={() => setPicking(false)}
+          run={run}
+        />
+      )}
+      </div>
+    </div>
+  )
+}
+
+/** Search AniList and link the folder to the chosen entry (for covers and cross-language matching). */
+function AniListPicker({
+  folder,
+  onDone,
+  run
+}: {
+  folder: FolderInfo
+  onDone: () => void
+  run: (fn: () => Promise<unknown>) => void
+}): JSX.Element {
+  const [query, setQuery] = useState(() => splitSeason(folder.name).base)
+  const [results, setResults] = useState<AniListMedia[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const search = useCallback(async (q: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      setResults(await window.api.searchAniList(q))
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    search(query)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <div className="anilist-picker">
+      <form
+        className="inline-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          search(query)
+        }}
+      >
+        <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search AniList" />
+        <button type="submit" disabled={busy}>
+          {busy ? 'Searching…' : 'Search'}
+        </button>
+        {folder.anilist && (
+          <button type="button" onClick={() => (run(() => window.api.linkFolder(folder.id, null)), onDone())}>
+            Unlink
+          </button>
+        )}
+        <button type="button" onClick={onDone}>
+          Close
+        </button>
+      </form>
+      {error && <div className="error">{error}</div>}
+      {results && results.length === 0 && <p className="muted">No matches.</p>}
+      {results && results.length > 0 && (
+        <div className="anilist-results">
+          {results.map((m) => (
+            <button
+              key={m.id}
+              className={`anilist-result ${folder.anilist?.id === m.id ? 'current' : ''}`}
+              onClick={() => (run(() => window.api.linkFolder(folder.id, m.id)), onDone())}
+            >
+              {m.coverUrl ? <img src={m.coverUrl} alt="" loading="lazy" /> : <div className="no-cover" />}
+              <span className="anilist-result-title">{m.title}</span>
+              {m.english && m.english !== m.title && <span className="muted">{m.english}</span>}
+              <span className="muted">
+                {[m.format?.replace('_', ' '), m.year, m.episodes ? `${m.episodes} eps` : null].filter(Boolean).join(' · ')}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Episodes to pick up again: the latest played per folder, or the next one after it. */
+function ContinueWatching({ lib, onPlay }: { lib: LibraryData; onPlay: (e: EpisodeInfo) => void }): JSX.Element | null {
+  const items = useMemo(() => {
+    const latest = new Map<number | null, EpisodeInfo>()
+    for (const e of lib.episodes) {
+      if (e.lastPlayedAt == null) continue
+      const cur = latest.get(e.folderId)
+      if (!cur || e.lastPlayedAt > cur.lastPlayedAt!) latest.set(e.folderId, e)
+    }
+    const out: { ep: EpisodeInfo; folder: FolderInfo | null; playedAt: number }[] = []
+    for (const [folderId, last] of latest) {
+      let ep: EpisodeInfo | undefined = last
+      if (last.watched) {
+        // Finished it: offer the next unwatched episode in the folder instead.
+        const eps = lib.episodes.filter((e) => e.folderId === folderId).sort(compareEpisodes)
+        ep = eps.slice(eps.indexOf(last) + 1).find((e) => !e.watched)
+      }
+      if (ep) out.push({ ep, folder: lib.folders.find((f) => f.id === folderId) ?? null, playedAt: last.lastPlayedAt! })
+    }
+    return out.sort((a, b) => b.playedAt - a.playedAt).slice(0, 8)
+  }, [lib])
+
+  if (items.length === 0) return null
+  return (
+    <>
+      <h2 className="section-title">Continue watching</h2>
+      <div className="continue-row">
+        {items.map(({ ep, folder }) => (
+          <button key={ep.id} className="continue-card" onClick={() => onPlay(ep)} title={ep.title}>
+            <div className="continue-art">
+              {folder ? <FolderArt folder={folder} /> : <div className="folder-tile">?</div>}
+              <span className="continue-play">▶</span>
+            </div>
+            <div className="continue-body">
+              <div className="folder-name">{folder?.name ?? 'Unsorted'}</div>
+              <div className="muted folder-meta">
+                {epLabel(ep, true)}
+                {ep.positionSec > RESUME_MIN_SEC && ` · ${formatClock(ep.positionSec)}`}
+                {ep.positionSec > RESUME_MIN_SEC && ep.durationSec ? ` / ${formatClock(ep.durationSec)}` : ''}
+              </div>
+              <div className="progress thin">
+                <div
+                  className="progress-fill"
+                  style={{ width: ep.durationSec ? `${Math.min(ep.positionSec / ep.durationSec, 1) * 100}%` : 0 }}
+                />
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </>
+  )
+}
+
+/** The folder's AniList cover, or a colored tile with its initials. */
+function FolderArt({ folder }: { folder: FolderInfo }): JSX.Element {
+  const [failed, setFailed] = useState(false)
+  const cover = folder.anilist?.coverUrl
+  if (cover && !failed) {
+    return (
+      <div className="folder-tile cover" style={{ background: folder.anilist?.color ?? undefined }}>
+        <img src={cover} alt="" loading="lazy" draggable={false} onError={() => setFailed(true)} />
+      </div>
+    )
+  }
+  return (
+    <div className="folder-tile" style={{ background: tileColor(folder.name) }}>
+      {initials(folder.name)}
     </div>
   )
 }
@@ -280,9 +463,7 @@ function FolderGrid({
             onClick={() => onOpen(f.id)}
             drag={{ type: 'folder', id: f.id }}
           >
-            <div className="folder-tile" style={{ background: tileColor(f.name) }}>
-              {initials(f.name)}
-            </div>
+            <FolderArt folder={f} />
             <div className="folder-name" title={f.name}>
               {f.name}
             </div>
@@ -523,8 +704,10 @@ function subtreeEpisodes(lib: LibraryData, folderId: number): EpisodeInfo[] {
   return lib.episodes.filter((e) => e.folderId != null && ids.has(e.folderId))
 }
 
-function epLabel(e: EpisodeInfo): string {
-  return e.episodeNum != null ? `Ep ${e.episodeNum}` : 'next'
+/** "Ep 5"; for unnumbered episodes "next" in buttons, or the file name in cards. */
+function epLabel(e: EpisodeInfo, preferTitle = false): string {
+  if (e.episodeNum != null) return `Ep ${e.episodeNum}`
+  return preferTitle ? e.title.replace(/\.[^.]+$/, '') : 'next'
 }
 
 function initials(name: string): string {

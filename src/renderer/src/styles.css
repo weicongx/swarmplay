@@ -563,9 +563,132 @@ button.danger {
   min-width: 320px;
 }
 
+.folder-tile.cover {
+  overflow: hidden;
+}
+.folder-tile.cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.section-title {
+  font-size: 15px;
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.folder-head {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+.folder-head-art {
+  width: 130px;
+  flex-shrink: 0;
+}
+.folder-head-body {
+  flex: 1;
+  min-width: 0;
+}
+.anilist-line {
+  font-size: 13px;
+}
+
+.anilist-picker {
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.anilist-picker .inline-form input {
+  flex: 1;
+  max-width: 420px;
+}
+.anilist-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.anilist-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 6px;
+  font-size: 12px;
+}
+.anilist-result.current {
+  border-color: var(--green);
+}
+.anilist-result img,
+.anilist-result .no-cover {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--panel-2);
+  margin-bottom: 3px;
+}
+.anilist-result-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.continue-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 18px;
+}
+.continue-card {
+  display: flex;
+  gap: 10px;
+  width: 300px;
+  flex-shrink: 0;
+  text-align: left;
+  padding: 8px;
+  align-items: center;
+}
+.continue-art {
+  width: 56px;
+  flex-shrink: 0;
+  position: relative;
+}
+.continue-art .folder-tile {
+  font-size: 14px;
+}
+.continue-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 18px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.continue-card:hover .continue-play {
+  opacity: 1;
+}
+.continue-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .folder-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 14px;
   margin-bottom: 22px;
 }
@@ -590,7 +713,7 @@ button.danger {
   background: rgba(124, 140, 255, 0.12);
 }
 .folder-tile {
-  aspect-ratio: 3 / 2;
+  aspect-ratio: 2 / 3;
   border-radius: 7px;
   background: var(--panel-2);
   display: flex;

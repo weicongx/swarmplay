@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { flattenFolders, folderKey } from '@shared/folders'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { flattenFolders } from '@shared/folders'
 import {
   NYAA_CATEGORIES,
   NYAA_FILTERS,
@@ -193,6 +193,7 @@ function DetailPanel({
   /** 'new', 'none' (Unsorted), or an existing folder id */
   const [folderChoice, setFolderChoice] = useState<string>('new')
   const [newFolderName, setNewFolderName] = useState('')
+  const folderTouched = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -200,15 +201,23 @@ function DetailPanel({
     setError(null)
     setCopied(false)
     setAdded(null)
+    folderTouched.current = false
     Promise.all([window.api.getTorrentInfo(result.torrentUrl), window.api.getLibrary()])
       .then(([i, lib]) => {
         if (cancelled) return
         setInfo(i)
-        // File it with an existing folder for this series if there is one.
         setFolders(lib.folders)
-        const match = lib.folders.find((f) => folderKey(f.name) === folderKey(i.series))
-        setFolderChoice(match ? String(match.id) : 'new')
+        setFolderChoice('new')
         setNewFolderName(i.series)
+        // File it with an existing folder for this series if there is one; this can
+        // take a moment when it has to ask AniList, so don't override a manual pick.
+        window.api
+          .suggestFolder(i.series)
+          .then((s) => {
+            if (cancelled || folderTouched.current) return
+            setFolderChoice(s.folderId != null ? String(s.folderId) : 'new')
+          })
+          .catch(() => {})
         // Default to every video file; fall back to everything if there are none.
         const videos = i.files.filter((f) => VIDEO_EXT.test(f.path))
         setChecked(new Set((videos.length ? videos : i.files).map((f) => f.index)))
@@ -315,7 +324,13 @@ function DetailPanel({
       {info && (
         <label className="save-to">
           <span>Save to library folder</span>
-          <select value={folderChoice} onChange={(e) => setFolderChoice(e.target.value)}>
+          <select
+            value={folderChoice}
+            onChange={(e) => {
+              folderTouched.current = true
+              setFolderChoice(e.target.value)
+            }}
+          >
             <option value="new">New folder…</option>
             {flattenFolders(folders).map(({ folder, depth }) => (
               <option key={folder.id} value={folder.id}>
@@ -328,7 +343,10 @@ function DetailPanel({
           {folderChoice === 'new' && (
             <input
               value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
+              onChange={(e) => {
+                folderTouched.current = true
+                setNewFolderName(e.target.value)
+              }}
               placeholder="Series name"
             />
           )}

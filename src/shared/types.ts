@@ -112,6 +112,8 @@ export interface FolderInfo {
   name: string
   parentId: number | null
   createdAt: number
+  /** The AniList entry this folder is linked to, if any */
+  anilist: AniListMedia | null
 }
 
 export interface EpisodeInfo {
@@ -126,6 +128,7 @@ export interface EpisodeInfo {
   positionSec: number
   durationSec: number | null
   watched: boolean
+  lastPlayedAt: number | null
 }
 
 export interface LibraryData {
@@ -153,6 +156,23 @@ export interface Settings {
   mpvPath: string
   /** Play the torrent's next episode when one finishes */
   autoplayNext: boolean
+  /** Closing the window hides it to the tray so downloads and seeding continue */
+  closeToTray: boolean
+  /** Show a Windows notification when an episode finishes downloading */
+  notifyOnDownload: boolean
+}
+
+export interface AniListMedia {
+  id: number
+  /** Romaji title */
+  title: string
+  english: string | null
+  format: string | null
+  year: number | null
+  episodes: number | null
+  coverUrl: string | null
+  /** Accent color of the cover, e.g. "#e4a15d" */
+  color: string | null
 }
 
 export interface PlayerInfo {
@@ -198,6 +218,13 @@ export interface AppApi {
   moveFolder(id: number, parentId: number | null): Promise<void>
   /** folderId null moves them to Unsorted */
   moveEpisodes(episodeIds: number[], folderId: number | null): Promise<void>
+  /** The folder a release with this series name belongs in, matching by name and AniList entry. */
+  suggestFolder(series: string): Promise<{ folderId: number | null; name: string }>
+  searchAniList(query: string): Promise<AniListMedia[]>
+  /** anilistId null unlinks */
+  linkFolder(folderId: number, anilistId: number | null): Promise<void>
+  /** Main process asks the window to show a page, e.g. after a notification is clicked. */
+  onNavigate(cb: (to: { page: 'library'; folderId: number | null }) => void): () => void
   /** Called about once a second with every torrent's status. Returns an unsubscribe function. */
   onTorrentsUpdate(cb: (torrents: TorrentStatusInfo[]) => void): () => void
 }

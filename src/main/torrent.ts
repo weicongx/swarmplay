@@ -67,9 +67,20 @@ interface Entry {
   fileProgress: number[]
   torrent: WtTorrent | null
   error: string | null
+  /**
+   * Files already seen complete. Filled on the first ready tick without notifying,
+   * so files that were on disk before (startup re-check) don't count as new downloads.
+   */
+  seenComplete?: Set<number>
 }
 
 const entries = new Map<number, Entry>()
+const fileCompleteListeners: ((torrentId: number, fileIndex: number) => void)[] = []
+
+/** Called when a selected video finishes downloading while the app is running. */
+export function onFileComplete(cb: (torrentId: number, fileIndex: number) => void): void {
+  fileCompleteListeners.push(cb)
+}
 let client: WtClient | null = null
 let clientPromise: Promise<WtClient> | null = null
 let serverPort = 0
@@ -185,6 +196,15 @@ export async function pauseTorrent(id: number): Promise<void> {
   const entry = mustGet(id)
   await stop(entry)
   setStatus(entry, 'paused')
+}
+
+/** Pause every torrent that is downloading (seeding ones keep seeding). */
+export async function pauseAll(): Promise<void> {
+  for (const e of entries.values()) if (e.row.status === 'downloading') await pauseTorrent(e.row.id)
+}
+
+export async function resumeAll(): Promise<void> {
+  for (const e of entries.values()) if (e.row.status === 'paused') await resumeTorrent(e.row.id)
 }
 
 export async function resumeTorrent(id: number): Promise<void> {
@@ -472,7 +492,20 @@ function tick(): void {
 
   for (const entry of entries.values()) {
     const s = statusOf(entry)
-    if (!entry.torrent?.ready) continue
+    if (!entry.torrent?.ready) {
+      entry.seenComplete = undefined
+      continue
+    }
+
+    // Compare against our own record, not the last progress reading: other callers
+    // (the tray, the Downloads page) refresh progress between ticks.
+    const firstTick = !entry.seenComplete
+    entry.seenComplete ??= new Set()
+    for (const f of s.files) {
+      if (!f.selected || !f.isVideo || f.progress < 1 || entry.seenComplete.has(f.index)) continue
+      entry.seenComplete.add(f.index)
+      if (!firstTick) for (const cb of fileCompleteListeners) cb(entry.row.id, f.index)
+    }
 
     const complete = s.files.every((f) => !f.selected || f.progress >= 1)
     if (complete && entry.row.status === 'downloading') {

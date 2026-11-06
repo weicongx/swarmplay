@@ -16,11 +16,14 @@ import {
   createFolder,
   deleteFolder,
   getLibrary,
+  linkFolder,
   moveEpisodes,
   moveFolder,
   renameFolder,
-  resolveFolder
+  resolveFolder,
+  suggestFolder
 } from './library'
+import { searchAniList } from './anilist'
 
 export function registerIpc(): void {
   ipcMain.handle('nyaa:search', async (_e, params: NyaaSearchParams) => {
@@ -41,7 +44,7 @@ export function registerIpc(): void {
     return settings
   })
 
-  ipcMain.handle('torrents:add', (_e, req: AddTorrentRequest) => addTorrent(req, resolveFolder(req.folder)))
+  ipcMain.handle('torrents:add', async (_e, req: AddTorrentRequest) => addTorrent(req, await resolveFolder(req.folder)))
   ipcMain.handle('torrents:list', () => listTorrents())
   ipcMain.handle('torrents:pause', (_e, id: number) => pauseTorrent(id))
   ipcMain.handle('torrents:resume', (_e, id: number) => resumeTorrent(id))
@@ -52,7 +55,7 @@ export function registerIpc(): void {
 
   ipcMain.handle('player:play', (_e, torrentId: number, fileIndex: number) => play(torrentId, fileIndex))
   ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
-    const { id } = await addTorrent(req, resolveFolder(req.folder))
+    const { id } = await addTorrent(req, await resolveFolder(req.folder))
     await play(id, fileIndex)
   })
 
@@ -64,6 +67,9 @@ export function registerIpc(): void {
   )
   ipcMain.handle('library:moveFolder', (_e, id: number, parentId: number | null) => moveFolder(id, parentId))
   ipcMain.handle('library:moveEpisodes', (_e, ids: number[], folderId: number | null) => moveEpisodes(ids, folderId))
+  ipcMain.handle('library:suggestFolder', (_e, series: string) => suggestFolder(series))
+  ipcMain.handle('library:linkFolder', (_e, folderId: number, anilistId: number | null) => linkFolder(folderId, anilistId))
+  ipcMain.handle('anilist:search', async (_e, query: string) => (await searchAniList(query)).map((c) => c.media))
   ipcMain.handle('player:setWatched', (_e, torrentId: number, fileIndex: number, watched: boolean) =>
     setWatched(torrentId, fileIndex, watched === true)
   )
