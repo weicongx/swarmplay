@@ -1,0 +1,26 @@
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import type { AppApi, TorrentStatusInfo } from '@shared/types'
+
+const api: AppApi = {
+  searchNyaa: (params) => ipcRenderer.invoke('nyaa:search', params),
+  getTorrentInfo: (torrentUrl) => ipcRenderer.invoke('nyaa:torrentInfo', torrentUrl),
+  getRecentSearches: () => ipcRenderer.invoke('search:recent'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+
+  addTorrent: (req) => ipcRenderer.invoke('torrents:add', req),
+  listTorrents: () => ipcRenderer.invoke('torrents:list'),
+  pauseTorrent: (id) => ipcRenderer.invoke('torrents:pause', id),
+  resumeTorrent: (id) => ipcRenderer.invoke('torrents:resume', id),
+  removeTorrent: (id, deleteFiles) => ipcRenderer.invoke('torrents:remove', id, deleteFiles),
+  showTorrentInFolder: (id) => ipcRenderer.invoke('torrents:showInFolder', id),
+  onTorrentsUpdate: (cb) => {
+    const listener = (_e: IpcRendererEvent, list: TorrentStatusInfo[]): void => cb(list)
+    ipcRenderer.on('torrents:update', listener)
+    return () => ipcRenderer.removeListener('torrents:update', listener)
+  }
+}
+
+contextBridge.exposeInMainWorld('api', api)
