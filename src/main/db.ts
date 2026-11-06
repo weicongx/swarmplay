@@ -78,6 +78,38 @@ const MIGRATIONS: string[] = [
     json       TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
   );
+  `,
+  `
+  -- A followed series: one group's uploads of one series and season at one
+  -- resolution, re-searched on nyaa so new episodes show up in the folder.
+  CREATE TABLE follows (
+    id            INTEGER PRIMARY KEY,
+    folder_id     INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    release_group TEXT NOT NULL,
+    series_key    TEXT NOT NULL,
+    resolution    TEXT,
+    query         TEXT NOT NULL,
+    category      TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    checked_at    INTEGER,
+    last_error    TEXT
+  );
+
+  -- The newest upload of each episode of a followed series. Downloading one
+  -- adds a torrent as usual; the library hides releases it already has.
+  CREATE TABLE releases (
+    id           INTEGER PRIMARY KEY,
+    follow_id    INTEGER NOT NULL REFERENCES follows(id) ON DELETE CASCADE,
+    episode_num  REAL NOT NULL,
+    nyaa_id      INTEGER NOT NULL,
+    title        TEXT NOT NULL,
+    torrent_url  TEXT NOT NULL,
+    info_hash    TEXT NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    published_at INTEGER NOT NULL,
+    added_at     INTEGER NOT NULL,
+    UNIQUE (follow_id, episode_num)
+  );
   `
 ]
 
@@ -116,6 +148,7 @@ function defaultSettings(): Settings {
     autoplayNext: true,
     closeToTray: true,
     notifyOnDownload: true,
+    notifyNewEpisodes: true,
     upscaler: 'off'
   }
 }

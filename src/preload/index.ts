@@ -42,6 +42,11 @@ const api: AppApi = {
   suggestFolder: (series) => ipcRenderer.invoke('library:suggestFolder', series),
   searchAniList: (query) => ipcRenderer.invoke('anilist:search', query),
   linkFolder: (folderId, anilistId) => ipcRenderer.invoke('library:linkFolder', folderId, anilistId),
+  followSeries: (release, folder) => ipcRenderer.invoke('follows:follow', release, folder),
+  checkFollow: (followId) => ipcRenderer.invoke('follows:check', followId),
+  unfollow: (followId) => ipcRenderer.invoke('follows:unfollow', followId),
+  downloadRelease: (releaseId) => ipcRenderer.invoke('releases:download', releaseId),
+  streamRelease: (releaseId) => ipcRenderer.invoke('releases:stream', releaseId),
   onNavigate: (cb) => {
     const listener = (_e: IpcRendererEvent, to: Parameters<typeof cb>[0]): void => cb(to)
     ipcRenderer.on('app:navigate', listener)

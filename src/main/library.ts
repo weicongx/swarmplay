@@ -1,4 +1,12 @@
-import type { AddTorrentRequest, AniListMedia, EpisodeInfo, FolderInfo, LibraryData } from '@shared/types'
+import type {
+  AddTorrentRequest,
+  AniListMedia,
+  AvailableEpisode,
+  EpisodeInfo,
+  FolderInfo,
+  FollowInfo,
+  LibraryData
+} from '@shared/types'
 import { compareEpisodes, seriesKey } from '@shared/folders'
 import { fetchDescription, findSeries, recentCandidate, type Candidate } from './anilist'
 import { getDb } from './db'
@@ -60,7 +68,61 @@ export function getLibrary(): LibraryData {
       lastPlayedAt: e.last_played_at
     })
   )
-  return { folders, episodes }
+  const available = (db.prepare(`${AVAILABLE_SQL} ORDER BY r.episode_num`).all() as unknown as AvailableRow[]).map(
+    (r): AvailableEpisode => ({
+      id: r.id,
+      folderId: r.folder_id,
+      followId: r.follow_id,
+      episodeNum: r.episode_num,
+      title: r.title,
+      sizeBytes: r.size_bytes,
+      publishedAt: r.published_at
+    })
+  )
+  const follows = (
+    db
+      .prepare('SELECT id, folder_id, release_group, resolution, checked_at, last_error FROM follows ORDER BY id')
+      .all() as {
+      id: number
+      folder_id: number
+      release_group: string
+      resolution: string | null
+      checked_at: number | null
+      last_error: string | null
+    }[]
+  ).map(
+    (f): FollowInfo => ({
+      id: f.id,
+      folderId: f.folder_id,
+      group: f.release_group,
+      resolution: f.resolution,
+      checkedAt: f.checked_at,
+      error: f.last_error
+    })
+  )
+  return { folders, episodes, available, follows }
+}
+
+/**
+ * Releases of followed series not downloaded yet: their torrent isn't in
+ * Downloads, and the folder has no episode with that number from another upload.
+ */
+export const AVAILABLE_SQL = `
+  SELECT r.id, f.folder_id, r.follow_id, r.episode_num, r.title, r.size_bytes, r.published_at
+  FROM releases r JOIN follows f ON f.id = r.follow_id
+  WHERE NOT EXISTS (SELECT 1 FROM torrents t WHERE t.info_hash = r.info_hash)
+    AND NOT EXISTS (
+      SELECT 1 FROM episodes e WHERE e.folder_id = f.folder_id AND e.episode_num = r.episode_num AND e.title != ''
+    )`
+
+interface AvailableRow {
+  id: number
+  folder_id: number
+  follow_id: number
+  episode_num: number
+  title: string
+  size_bytes: number
+  published_at: number
 }
 
 export function createFolder(name: string, parentId: number | null): number {

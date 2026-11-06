@@ -814,6 +814,25 @@ button.danger {
 .episode.watched .ep-num {
   color: var(--muted);
 }
+/* On nyaa but not downloaded: dimmed until it's streamed or downloaded. */
+.episode.available {
+  cursor: default;
+}
+.episode.available .ep-title,
+.episode.available .ep-num {
+  color: var(--muted);
+}
+.follow-line {
+  font-size: 13px;
+  margin: 2px 0 8px;
+}
+.follow-line strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.follow-line button.link {
+  font-size: 13px;
+}
 .ep-num {
   width: 52px;
   flex-shrink: 0;

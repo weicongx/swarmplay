@@ -67,7 +67,13 @@ export default function App(): JSX.Element {
       <main className="content">
         {/* Search stays mounted so results survive switching tabs. */}
         <div className="page-slot" hidden={page !== 'search'}>
-          <SearchPage onOpenDownloads={() => setPage('downloads')} />
+          <SearchPage
+            onOpenDownloads={() => setPage('downloads')}
+            onOpenFolder={(folderId) => {
+              setLibraryTarget((t) => ({ folderId, n: t.n + 1 }))
+              setPage('library')
+            }}
+          />
         </div>
         {page === 'downloads' && <DownloadsPage />}
         {page === 'library' && <LibraryPage key={libraryTarget.n} initialFolder={libraryTarget.folderId} />}

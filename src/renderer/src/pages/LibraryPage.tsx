@@ -12,12 +12,14 @@ import { compareEpisodes, flattenFolders, splitSeason } from '@shared/folders'
 import {
   RESUME_MIN_SEC,
   type AniListMedia,
+  type AvailableEpisode,
   type EpisodeInfo,
   type FolderInfo,
+  type FollowInfo,
   type LibraryData,
   type TorrentStatusInfo
 } from '@shared/types'
-import { errorMessage, formatBytes, formatClock } from '../format'
+import { errorMessage, formatAge, formatBytes, formatClock } from '../format'
 
 /** null = the library root; 'unsorted' = episodes without a folder */
 type Location = number | null | 'unsorted'
@@ -73,6 +75,7 @@ export default function LibraryPage({ initialFolder = null }: { initialFolder?: 
   const episodes = lib.episodes
     .filter((e) => (at === 'unsorted' ? e.folderId === null : typeof at === 'number' && e.folderId === at))
     .sort(compareEpisodes)
+  const available = lib.available.filter((a) => a.folderId === at)
   const unsortedCount = lib.episodes.filter((e) => e.folderId === null).length
 
   return (
@@ -85,6 +88,7 @@ export default function LibraryPage({ initialFolder = null }: { initialFolder?: 
           key={folder.id}
           folder={folder}
           episodes={episodes}
+          available={available}
           lib={lib}
           onPlay={(e) => run(() => window.api.play(e.torrentId, e.fileIndex))}
           run={run}
@@ -119,7 +123,7 @@ export default function LibraryPage({ initialFolder = null }: { initialFolder?: 
       )}
 
       {(at === 'unsorted' || typeof at === 'number') && (
-        <EpisodeList episodes={episodes} lib={lib} torrents={torrents} run={run} />
+        <EpisodeList episodes={episodes} available={available} lib={lib} torrents={torrents} run={run} />
       )}
     </div>
   )
@@ -173,12 +177,14 @@ function Breadcrumbs({
 function FolderHeader({
   folder,
   episodes,
+  available,
   lib,
   onPlay,
   run
 }: {
   folder: FolderInfo
   episodes: EpisodeInfo[]
+  available: AvailableEpisode[]
   lib: LibraryData
   onPlay: (e: EpisodeInfo) => void
   run: (fn: () => Promise<unknown>) => void
@@ -193,6 +199,9 @@ function FolderHeader({
   const watched = episodes.filter((e) => e.watched).length
   const nested = subtreeEpisodes(lib, folder.id).length
   const a = folder.anilist
+  const follows = lib.follows.filter((f) => f.folderId === folder.id)
+  // Nothing downloaded to continue with: offer to stream the first available episode.
+  const streamFirst = !next ? available[0] : undefined
 
   return (
     <div className="library-head folder-head">
@@ -236,7 +245,11 @@ function FolderHeader({
         {episodes.length} episode{episodes.length === 1 ? '' : 's'}
         {a?.episodes ? ` of ${a.episodes}` : ''}
         {episodes.length > 0 && ` · ${watched} watched`}
+        {available.length > 0 && ` · ${available.length} not downloaded`}
       </p>
+      {follows.map((f) => (
+        <FollowLine key={f.id} follow={f} run={run} />
+      ))}
       {a?.description && <Description text={a.description} />}
 
       <div className="torrent-actions">
@@ -245,6 +258,11 @@ function FolderHeader({
             {next.positionSec > RESUME_MIN_SEC
               ? `Continue ${epLabel(next)} at ${formatClock(next.positionSec)}`
               : `Play ${epLabel(next)}`}
+          </button>
+        )}
+        {streamFirst && (
+          <button className="primary" onClick={() => run(() => window.api.streamRelease(streamFirst.id))}>
+            Stream Ep {streamFirst.episodeNum}
           </button>
         )}
         <NewFolderButton parentId={folder.id} label="New subfolder" run={run} />
@@ -286,6 +304,50 @@ function FolderHeader({
       )}
       </div>
     </div>
+  )
+}
+
+/** "Following Judas 1080p uploads · checked 5 min ago · Check now · Unfollow" */
+function FollowLine({ follow, run }: { follow: FollowInfo; run: (fn: () => Promise<unknown>) => void }): JSX.Element {
+  const [checking, setChecking] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+  return (
+    <p className="follow-line muted">
+      Following <strong>{follow.group}</strong>
+      {follow.resolution && ` ${follow.resolution}`} uploads
+      {follow.error ? (
+        <span className="error-text"> · last check failed: {follow.error}</span>
+      ) : (
+        follow.checkedAt && ` · checked ${formatAge(new Date(follow.checkedAt).toISOString())}`
+      )}
+      {' · '}
+      <button
+        className="link"
+        disabled={checking}
+        onClick={() => {
+          setChecking(true)
+          run(() => window.api.checkFollow(follow.id).finally(() => setChecking(false)))
+        }}
+      >
+        {checking ? 'Checking…' : 'Check now'}
+      </button>
+      {' · '}
+      {confirm ? (
+        <>
+          <span>Remove its episodes that aren't downloaded? </span>
+          <button className="link" onClick={() => run(() => window.api.unfollow(follow.id))}>
+            Unfollow
+          </button>{' '}
+          <button className="link" onClick={() => setConfirm(false)}>
+            Cancel
+          </button>
+        </>
+      ) : (
+        <button className="link" onClick={() => setConfirm(true)}>
+          Unfollow
+        </button>
+      )}
+    </p>
   )
 }
 
@@ -489,6 +551,7 @@ function FolderGrid({
       {folders.map((f) => {
         const eps = subtreeEpisodes(lib, f.id)
         const watched = eps.filter((e) => e.watched).length
+        const notDownloaded = lib.available.filter((a) => a.folderId === f.id).length
         return (
           <DropTarget
             key={f.id}
@@ -505,6 +568,7 @@ function FolderGrid({
             <div className="muted folder-meta">
               {eps.length} ep{eps.length === 1 ? '' : 's'}
               {eps.length > 0 && ` · ${watched} watched`}
+              {notDownloaded > 0 && ` · ${notDownloaded} to get`}
             </div>
             <div className="progress thin">
               <div className="progress-fill" style={{ width: eps.length ? `${(watched / eps.length) * 100}%` : 0 }} />
@@ -592,22 +656,60 @@ function NewFolderButton({
 
 function EpisodeList({
   episodes,
+  available,
   lib,
   torrents,
   run
 }: {
   episodes: EpisodeInfo[]
+  available: AvailableEpisode[]
   lib: LibraryData
   torrents: Map<number, TorrentStatusInfo>
   run: (fn: () => Promise<unknown>) => void
 }): JSX.Element {
   const options = useMemo(() => flattenFolders(lib.folders), [lib.folders])
-  if (episodes.length === 0) {
+  // Downloaded and not-yet-downloaded episodes in one list, by episode number.
+  const rows = useMemo(
+    () =>
+      [
+        ...episodes.map((e) => ({ kind: 'episode' as const, num: e.episodeNum, title: e.title, e })),
+        ...available.map((a) => ({ kind: 'available' as const, num: a.episodeNum, title: a.title, a }))
+      ].sort(
+        (x, y) => (x.num ?? Infinity) - (y.num ?? Infinity) || x.title.localeCompare(y.title, undefined, { numeric: true })
+      ),
+    [episodes, available]
+  )
+  if (rows.length === 0) {
     return <p className="muted">No episodes here yet. Drag episodes onto this folder, or pick it when downloading.</p>
   }
   return (
     <ul className="episode-list">
-      {episodes.map((e) => {
+      {rows.map((row) => {
+        if (row.kind === 'available') {
+          const a = row.a
+          return (
+            <li key={`r${a.id}`} className="episode available">
+              <button className="play-file" title="Stream" onClick={() => run(() => window.api.streamRelease(a.id))}>
+                ▶
+              </button>
+              <span className="ep-num">Ep {a.episodeNum}</span>
+              <span className="ep-title" title={a.title}>
+                {a.title}
+              </span>
+              <span className="ep-state">
+                <span className="muted">Not downloaded · {formatAge(new Date(a.publishedAt).toISOString())}</span>
+                <span className="muted">{formatBytes(a.sizeBytes)}</span>
+                <button className="link" onClick={() => run(() => window.api.streamRelease(a.id))}>
+                  Stream
+                </button>
+                <button className="link" onClick={() => run(() => window.api.downloadRelease(a.id))}>
+                  Download
+                </button>
+              </span>
+            </li>
+          )
+        }
+        const e = row.e
         const t = torrents.get(e.torrentId)
         const file = t?.files[e.fileIndex]
         const progress = file?.progress ?? 0

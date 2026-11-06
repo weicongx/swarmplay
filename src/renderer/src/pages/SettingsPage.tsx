@@ -110,6 +110,15 @@ export default function SettingsPage(): JSX.Element {
         <span>Notify me when an episode finishes downloading</span>
       </label>
 
+      <label className="inline">
+        <input
+          type="checkbox"
+          checked={settings.notifyNewEpisodes}
+          onChange={(e) => update({ notifyNewEpisodes: e.target.checked })}
+        />
+        <span>Notify me when a series I follow gets a new episode</span>
+      </label>
+
       <label>
         <span>nyaa address</span>
         <input

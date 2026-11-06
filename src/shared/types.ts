@@ -131,9 +131,42 @@ export interface EpisodeInfo {
   lastPlayedAt: number | null
 }
 
+/** An episode of a followed series that's on nyaa but not downloaded. */
+export interface AvailableEpisode {
+  /** Release id, for streamRelease/downloadRelease */
+  id: number
+  folderId: number
+  followId: number
+  episodeNum: number
+  /** nyaa release name */
+  title: string
+  sizeBytes: number
+  publishedAt: number
+}
+
+/** A series whose new episodes are added to a folder as they're uploaded. */
+export interface FollowInfo {
+  id: number
+  folderId: number
+  group: string
+  resolution: string | null
+  checkedAt: number | null
+  /** Why the last check failed, if it did */
+  error: string | null
+}
+
 export interface LibraryData {
   folders: FolderInfo[]
   episodes: EpisodeInfo[]
+  available: AvailableEpisode[]
+  follows: FollowInfo[]
+}
+
+export interface FollowResult {
+  folderId: number
+  folderName: string
+  /** Episodes in the folder that aren't downloaded yet */
+  available: number
 }
 
 export interface AddTorrentResult {
@@ -160,6 +193,8 @@ export interface Settings {
   closeToTray: boolean
   /** Show a Windows notification when an episode finishes downloading */
   notifyOnDownload: boolean
+  /** Show a Windows notification when a followed series gets a new episode */
+  notifyNewEpisodes: boolean
   upscaler: Upscaler
 }
 
@@ -297,6 +332,19 @@ export interface AppApi {
   searchAniList(query: string): Promise<AniListMedia[]>
   /** anilistId null unlinks */
   linkFolder(folderId: number, anilistId: number | null): Promise<void>
+  /**
+   * Follow the series this release belongs to (same group, series, season and
+   * resolution): its other episodes go into the folder without downloading, and
+   * new ones are added as they're uploaded.
+   */
+  followSeries(release: NyaaResult, folder: AddTorrentRequest['folder']): Promise<FollowResult>
+  /** Search nyaa for new episodes now; returns how many were added. */
+  checkFollow(followId: number): Promise<number>
+  /** Stop following; episodes not downloaded leave the library, downloaded ones stay. */
+  unfollow(followId: number): Promise<void>
+  downloadRelease(releaseId: number): Promise<void>
+  /** Add the release's torrent and start playing it while it downloads. */
+  streamRelease(releaseId: number): Promise<void>
   /** Main process asks the window to show a page, e.g. after a notification is clicked. */
   onNavigate(cb: (to: { page: 'library'; folderId: number | null }) => void): () => void
   /** Called about once a second with every torrent's status. Returns an unsubscribe function. */

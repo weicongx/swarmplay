@@ -9,6 +9,7 @@ const APP_ID = app.isPackaged ? 'com.weicongx.swarmplay' : 'com.weicongx.swarmpl
 import { firstTime, getDb, getSettings } from './db'
 import { registerIpc } from './ipc'
 import { autoLinkAll, describeEpisode } from './library'
+import { onNewEpisodes, startFollowChecks } from './follows'
 import { initTorrents, onFileComplete, shutdownTorrents } from './torrent'
 import { attachPlayerWindow, stopPlayer } from './player'
 
@@ -115,6 +116,16 @@ if (!app.requestSingleInstanceLock()) {
         win?.webContents.send('app:navigate', { page: 'library', folderId: ep.folderId })
       )
     })
+
+    onNewEpisodes((folderId, episodes) => {
+      if (!getSettings().notifyNewEpisodes) return
+      const folder = getDb().prepare('SELECT name FROM folders WHERE id = ?').get(folderId) as { name: string } | undefined
+      const which = episodes.length === 1 ? `Episode ${episodes[0]}` : `Episodes ${episodes.join(', ')}`
+      notify(episodes.length === 1 ? 'New episode' : 'New episodes', `${folder?.name ?? 'A followed series'} · ${which}`, () =>
+        win?.webContents.send('app:navigate', { page: 'library', folderId })
+      )
+    })
+    startFollowChecks()
 
     app.on('activate', showWindow)
   })

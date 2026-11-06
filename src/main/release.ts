@@ -5,6 +5,10 @@ export interface ReleaseInfo {
   series: string
   /** Episode number, or null for batches, movies and unrecognized names */
   episode: number | null
+  /** Release group from the leading "[Group]" tag */
+  group: string | null
+  /** e.g. "1080p" */
+  resolution: string | null
 }
 
 // Groups disagree on where the season goes ("Show S2 - 05", "Show 2nd Season - 05",
@@ -20,5 +24,8 @@ export function parseRelease(name: string): ReleaseInfo {
   const ep = r?.episode?.number
   // A range (01-12) means a batch, not a single episode.
   const episode = typeof ep === 'number' && r?.episode?.numberAlt == null ? ep : null
-  return { series: series || name, episode }
+  // anitomy doesn't report the group, but nyaa uploads almost always lead with it.
+  const group = name.match(/^\s*\[([^\]]+)\]/)?.[1].trim() || null
+  const resolution = r?.video?.resolution?.toLowerCase() || null
+  return { series: series || name, episode, group, resolution }
 }

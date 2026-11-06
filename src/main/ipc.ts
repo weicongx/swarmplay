@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import type { AddTorrentRequest, NyaaSearchParams, PlayerCommand, Settings, VideoRect } from '@shared/types'
+import type { AddTorrentRequest, NyaaResult, NyaaSearchParams, PlayerCommand, Settings, VideoRect } from '@shared/types'
 import { getRecentSearches, getSettings, recordSearch, setSettings } from './db'
 import { getTorrentInfo, searchNyaa } from './nyaa'
 import {
@@ -24,6 +24,7 @@ import {
   suggestFolder
 } from './library'
 import { searchAniList } from './anilist'
+import { checkFollow, downloadRelease, followSeries, streamRelease, unfollow } from './follows'
 
 export function registerIpc(): void {
   ipcMain.handle('nyaa:search', async (_e, params: NyaaSearchParams) => {
@@ -72,6 +73,13 @@ export function registerIpc(): void {
   ipcMain.handle('library:moveEpisodes', (_e, ids: number[], folderId: number | null) => moveEpisodes(ids, folderId))
   ipcMain.handle('library:suggestFolder', (_e, series: string) => suggestFolder(series))
   ipcMain.handle('library:linkFolder', (_e, folderId: number, anilistId: number | null) => linkFolder(folderId, anilistId))
+  ipcMain.handle('follows:follow', (_e, release: NyaaResult, folder: AddTorrentRequest['folder']) =>
+    followSeries(release, folder)
+  )
+  ipcMain.handle('follows:check', (_e, id: number) => checkFollow(id))
+  ipcMain.handle('follows:unfollow', (_e, id: number) => unfollow(id))
+  ipcMain.handle('releases:download', (_e, id: number) => downloadRelease(id))
+  ipcMain.handle('releases:stream', (_e, id: number) => streamRelease(id))
   ipcMain.handle('anilist:search', async (_e, query: string) => (await searchAniList(query)).map((c) => c.media))
   ipcMain.handle('player:setWatched', (_e, torrentId: number, fileIndex: number, watched: boolean) =>
     setWatched(torrentId, fileIndex, watched === true)

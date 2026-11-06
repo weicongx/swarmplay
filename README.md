@@ -17,6 +17,7 @@ A Windows desktop app for watching anime from torrents. Search nyaa.si, pick a r
   - New downloads go into one folder per series. The folder name is parsed from the release name, with the season normalized (*S2*, *2nd Season* and *- S02* all become *Show S2*).
   - Folders can be nested and renamed.
   - Episodes move between folders by drag and drop.
+- **Follow a series.** Pick any episode in Search and choose **Add series to library**. Swarmplay finds that group's other uploads of the series (same season and resolution) and lists them in the folder without downloading, each with **Stream** and **Download**. It checks nyaa every 30 minutes and adds new episodes as they come out, with a notification.
 - **AniList.** Folders link to their AniList entry for the cover, alternate titles and episode count. An English-titled release still finds the folder you named in romaji. *Continue watching* sits at the top of the library.
 - **Background downloads.** Downloads keep going from the tray when you close the window. Swarmplay notifies you when an episode finishes, and seeds afterwards if you want.
 
@@ -58,7 +59,8 @@ npm run dev
 1. **Search.** Type a show name. Click a result to open its details, tick the episodes you want, and pick a library folder (one is suggested from the release name).
 2. **Download** saves the files in the background. **Stream now** also starts playing right away.
 3. **Downloads** shows progress, speed and peers for each torrent, with pause, resume and remove. Remove can keep or delete the files.
-4. **Library** holds your series folders. Click an episode to play it. Use **Find on AniList** when a folder didn't get a cover automatically.
+4. **Add series to library** (in the same panel) follows the series instead of downloading one episode. Its episodes show up in the folder as *Not downloaded* until you stream or download them. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
+5. **Library** holds your series folders. Click an episode to play it. Use **Find on AniList** when a folder didn't get a cover automatically.
 
 ### Player keys
 
@@ -133,6 +135,7 @@ src/
     torrent.ts       WebTorrent engine, stream server, pause/resume
     player.ts        embedded mpv: window, IPC, resume, upscaling
     library.ts       folders, episodes, auto-filing, next episode
+    follows.ts       followed series: matching uploads, 30-minute checks
     release.ts       release-name parsing (anitomy)
     anilist.ts       AniList GraphQL search, cache, throttling
     tray.ts          tray icon and menu

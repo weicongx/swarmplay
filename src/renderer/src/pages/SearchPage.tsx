@@ -6,6 +6,7 @@ import {
   VIDEO_EXT,
   type AddTorrentRequest,
   type FolderInfo,
+  type FollowResult,
   type NyaaResult,
   type TorrentInfo
 } from '@shared/types'
@@ -20,7 +21,13 @@ const SORTS: { id: SortKey; label: string }[] = [
   { id: 'size', label: 'Largest' }
 ]
 
-export default function SearchPage({ onOpenDownloads }: { onOpenDownloads: () => void }): JSX.Element {
+export default function SearchPage({
+  onOpenDownloads,
+  onOpenFolder
+}: {
+  onOpenDownloads: () => void
+  onOpenFolder: (folderId: number) => void
+}): JSX.Element {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('1_2')
   const [filter, setFilter] = useState(0)
@@ -168,6 +175,7 @@ export default function SearchPage({ onOpenDownloads }: { onOpenDownloads: () =>
           result={selected}
           onClose={() => setSelected(null)}
           onOpenDownloads={onOpenDownloads}
+          onOpenFolder={onOpenFolder}
         />
       )}
     </div>
@@ -177,11 +185,13 @@ export default function SearchPage({ onOpenDownloads }: { onOpenDownloads: () =>
 function DetailPanel({
   result,
   onClose,
-  onOpenDownloads
+  onOpenDownloads,
+  onOpenFolder
 }: {
   result: NyaaResult
   onClose: () => void
   onOpenDownloads: () => void
+  onOpenFolder: (folderId: number) => void
 }): JSX.Element {
   const [info, setInfo] = useState<TorrentInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -189,6 +199,7 @@ function DetailPanel({
   const [checked, setChecked] = useState<Set<number>>(new Set())
   const [adding, setAdding] = useState(false)
   const [added, setAdded] = useState<string | null>(null)
+  const [followed, setFollowed] = useState<FollowResult | null>(null)
   const [folders, setFolders] = useState<FolderInfo[]>([])
   /** 'new', 'none' (Unsorted), or an existing folder id */
   const [folderChoice, setFolderChoice] = useState<string>('new')
@@ -201,6 +212,7 @@ function DetailPanel({
     setError(null)
     setCopied(false)
     setAdded(null)
+    setFollowed(null)
     folderTouched.current = false
     Promise.all([window.api.getTorrentInfo(result.torrentUrl), window.api.getLibrary()])
       .then(([i, lib]) => {
@@ -268,6 +280,19 @@ function DetailPanel({
     try {
       await window.api.streamNow(request, firstVideo.index)
       setAdded('Opening in mpv. Playback starts once the first pieces arrive.')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  async function follow(): Promise<void> {
+    setAdding(true)
+    setError(null)
+    setAdded(null)
+    try {
+      setFollowed(await window.api.followSeries(result, request.folder))
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -374,6 +399,26 @@ function DetailPanel({
           {added}{' '}
           <button className="link" onClick={onOpenDownloads}>
             View downloads
+          </button>
+        </div>
+      )}
+      <div className="actions">
+        <button
+          disabled={!info || adding}
+          onClick={follow}
+          title="Adds this group's other episodes of the series to the library without downloading them, and adds new ones as they come out"
+        >
+          Add series to library
+        </button>
+      </div>
+      {followed && (
+        <div className="notice">
+          {followed.available > 0
+            ? `${followed.available} episode${followed.available === 1 ? '' : 's'} ready to stream or download in ${followed.folderName}.`
+            : `Following in ${followed.folderName}; you already have every episode.`}{' '}
+          New episodes will appear there as they're uploaded.{' '}
+          <button className="link" onClick={() => onOpenFolder(followed.folderId)}>
+            Open folder
           </button>
         </div>
       )}
