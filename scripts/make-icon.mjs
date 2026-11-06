@@ -10,8 +10,9 @@ const SS = 4
 function render(size) {
   const n = size * SS
   const px = new Float64Array(size * size * 4)
-  const top = [0x8b, 0x9a, 0xff] // accent, lighter
-  const bottom = [0x5a, 0x49, 0xd6]
+  // Terracotta, matching the app's accent (#d97757): lighter top-left to deeper bottom-right.
+  const top = [0xe8, 0x93, 0x73]
+  const bottom = [0xb8, 0x58, 0x3a]
   const r = 0.22 // corner radius (fraction of size)
 
   // Play triangle and three trailing "swarm" dots, in unit coordinates.
