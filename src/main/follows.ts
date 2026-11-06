@@ -1,11 +1,11 @@
 import { seriesKey, splitSeason } from '@shared/folders'
-import { VIDEO_EXT, type AddTorrentRequest, type FollowResult, type NyaaResult } from '@shared/types'
+import type { AddTorrentRequest, FollowResult, NyaaResult } from '@shared/types'
 import { getDb, getSettings } from './db'
-import { AVAILABLE_SQL, resolveFolder } from './library'
-import { getTorrentInfo, searchNyaa } from './nyaa'
+import { addRelease, AVAILABLE_SQL, resolveFolder } from './library'
+import { searchNyaa } from './nyaa'
 import { play } from './player'
 import { parseRelease, type ReleaseInfo } from './release'
-import { addTorrent } from './torrent'
+import { isKept, pruneStreamTorrents } from './torrent'
 
 const CHECK_EVERY_MS = 30 * 60_000
 // Space out searches when checking many series, to go easy on nyaa.
@@ -78,16 +78,29 @@ export async function checkFollow(followId: number): Promise<number> {
   return (await check(mustGetFollow(followId))).length
 }
 
-export function unfollow(followId: number): void {
-  getDb().prepare('DELETE FROM follows WHERE id = ?').run(followId)
+/** Stop following. Its episodes that were only streamed leave the library; downloads stay. */
+export async function unfollow(followId: number): Promise<void> {
+  const f = mustGetFollow(followId)
+  const db = getDb()
+  const streamed = db
+    .prepare(
+      `SELECT e.id, e.torrent_id, e.file_index FROM episodes e JOIN torrents t ON t.id = e.torrent_id
+       WHERE e.folder_id = ? AND t.info_hash IN (SELECT info_hash FROM releases WHERE follow_id = ?)`
+    )
+    .all(f.folder_id, f.id) as { id: number; torrent_id: number; file_index: number }[]
+  const drop = db.prepare('DELETE FROM episodes WHERE id = ?')
+  for (const e of streamed) if (!isKept(e.torrent_id, e.file_index)) drop.run(e.id)
+  db.prepare('DELETE FROM follows WHERE id = ?').run(followId)
+  await pruneStreamTorrents()
 }
 
 export async function downloadRelease(releaseId: number): Promise<void> {
-  await addRelease(releaseId)
+  await addRelease(releaseId, true)
 }
 
+/** Add the release to the library without downloading it, and play it. */
 export async function streamRelease(releaseId: number): Promise<void> {
-  const { torrentId, fileIndex } = await addRelease(releaseId)
+  const { torrentId, fileIndex } = await addRelease(releaseId, false)
   if (fileIndex == null) throw new Error('That torrent has no video file to play.')
   await play(torrentId, fileIndex)
 }
@@ -161,29 +174,6 @@ function checkAll(): void {
       if (fresh.length > 0) newEpisodesCb?.(f.folder_id, fresh.sort((a, b) => a - b))
     }
   })().finally(() => (checking = null))
-}
-
-/** Add a release's torrent to Downloads, filed in the follow's folder. */
-async function addRelease(releaseId: number): Promise<{ torrentId: number; fileIndex: number | null }> {
-  const rel = getDb()
-    .prepare('SELECT r.*, f.folder_id FROM releases r JOIN follows f ON f.id = r.follow_id WHERE r.id = ?')
-    .get(releaseId) as unknown as (ReleaseRow & { folder_id: number }) | undefined
-  if (!rel) throw new Error('That episode is no longer in the library.')
-
-  const baseUrl = getSettings().nyaaBaseUrl
-  const info = await getTorrentInfo(baseUrl, rel.torrent_url)
-  const videos = info.files
-    .filter((f) => VIDEO_EXT.test(f.path))
-    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
-  const { id } = await addTorrent(
-    {
-      torrentUrl: rel.torrent_url,
-      nyaaId: rel.nyaa_id,
-      fileIndexes: videos.length ? videos.map((f) => f.index) : undefined
-    },
-    await resolveFolder({ id: rel.folder_id })
-  )
-  return { torrentId: id, fileIndex: videos[0]?.index ?? null }
 }
 
 function countAvailable(folderId: number): number {

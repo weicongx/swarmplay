@@ -8,7 +8,9 @@ const STATUS_LABEL: Record<TorrentStatus, string> = {
   seeding: 'Seeding',
   done: 'Done',
   paused: 'Paused',
-  error: 'Error'
+  error: 'Error',
+  streaming: 'Streaming',
+  idle: 'Not downloaded'
 }
 
 export default function DownloadsPage(): JSX.Element {
@@ -27,16 +29,21 @@ export default function DownloadsPage(): JSX.Element {
   }
 
   if (!torrents) return <div className="page" />
+  // Torrents with nothing kept are only here while they stream.
+  const shown = torrents.filter((t) => t.streaming || t.files.some((f) => f.selected))
 
   return (
     <div className="page">
       <h1>Downloads</h1>
       {error && <div className="error">{error}</div>}
-      {torrents.length === 0 && (
-        <p className="muted">Nothing yet. Pick a result on the Search page and press Download.</p>
+      {shown.length === 0 && (
+        <p className="muted">
+          Nothing downloaded. Streaming doesn't save anything; press Download on Search or on a library episode to keep
+          it.
+        </p>
       )}
       <div className="torrent-list">
-        {torrents.map((t) => (
+        {shown.map((t) => (
           <TorrentCard key={t.id} t={t} run={run} />
         ))}
       </div>
@@ -60,6 +67,7 @@ function TorrentCard({
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
 
   const active = t.status === 'downloading' || t.status === 'seeding' || t.status === 'starting'
+  const streamOnly = !t.files.some((f) => f.selected)
   // The episode "Play" picks: first unwatched one, or the first if all are watched.
   const videos = selectedFiles.filter((f) => f.isVideo)
   const next = videos.find((f) => !f.watched) ?? videos[0]
@@ -78,67 +86,81 @@ function TorrentCard({
         <span className={`pill pill-${t.status}`}>{STATUS_LABEL[t.status]}</span>
       </div>
 
-      <div className="progress">
-        <div className="progress-fill" style={{ width: `${(t.progress * 100).toFixed(1)}%` }} />
-      </div>
+      {streamOnly ? (
+        <div className="torrent-stats">
+          <span>↓ {formatSpeed(t.downloadSpeed)}</span>
+          <span>↑ {formatSpeed(t.uploadSpeed)}</span>
+          <span>{t.numPeers} peers</span>
+          <span className="muted">Nothing is saved; it's deleted when playback stops.</span>
+        </div>
+      ) : (
+        <>
+          <div className="progress">
+            <div className="progress-fill" style={{ width: `${(t.progress * 100).toFixed(1)}%` }} />
+          </div>
 
-      <div className="torrent-stats">
-        <span>
-          {formatBytes(t.downloaded)} of {formatBytes(t.length)} · {(t.progress * 100).toFixed(1)}%
-        </span>
-        {t.status === 'downloading' && (
-          <>
-            <span>↓ {formatSpeed(t.downloadSpeed)}</span>
-            <span>↑ {formatSpeed(t.uploadSpeed)}</span>
-            <span>{t.numPeers} peers</span>
-            <span>{t.timeRemaining != null ? `${formatDuration(t.timeRemaining)} left` : 'Finding peers…'}</span>
-          </>
-        )}
-        {t.status === 'seeding' && (
-          <>
-            <span>↑ {formatSpeed(t.uploadSpeed)}</span>
-            <span>{t.numPeers} peers</span>
-          </>
-        )}
-        <span className="muted">Uploaded {formatBytes(t.uploaded)}</span>
-      </div>
+          <div className="torrent-stats">
+            <span>
+              {formatBytes(t.downloaded)} of {formatBytes(t.length)} · {(t.progress * 100).toFixed(1)}%
+            </span>
+            {t.status === 'downloading' && (
+              <>
+                <span>↓ {formatSpeed(t.downloadSpeed)}</span>
+                <span>↑ {formatSpeed(t.uploadSpeed)}</span>
+                <span>{t.numPeers} peers</span>
+                <span>{t.timeRemaining != null ? `${formatDuration(t.timeRemaining)} left` : 'Finding peers…'}</span>
+              </>
+            )}
+            {t.status === 'seeding' && (
+              <>
+                <span>↑ {formatSpeed(t.uploadSpeed)}</span>
+                <span>{t.numPeers} peers</span>
+              </>
+            )}
+            <span className="muted">Uploaded {formatBytes(t.uploaded)}</span>
+          </div>
+        </>
+      )}
 
       {t.error && <div className="error">{t.error}</div>}
 
-      <div className="torrent-actions">
-        {next && (
-          <button
-            className="primary"
-            title={displayPath(next.path, t.name)}
-            onClick={run(() => window.api.play(t.id, next.index))}
-          >
-            {next.positionSec > RESUME_MIN_SEC ? `Continue at ${formatClock(next.positionSec)}` : 'Play'}
-            {videos.length > 1 && ` · ${shortName(displayPath(next.path, t.name))}`}
-          </button>
-        )}
-        {active ? (
-          <button onClick={run(() => window.api.pauseTorrent(t.id))}>Pause</button>
-        ) : (
-          <button onClick={run(() => window.api.resumeTorrent(t.id))}>
-            {t.status === 'done' ? 'Seed' : t.status === 'error' ? 'Retry' : 'Resume'}
-          </button>
-        )}
-        <button onClick={run(() => window.api.showTorrentInFolder(t.id))}>Show in folder</button>
-        {!confirmRemove ? (
-          <button onClick={() => setConfirmRemove(true)}>Remove</button>
-        ) : (
-          <span className="confirm">
-            <label>
-              <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} />{' '}
-              Also delete files
-            </label>
-            <button className="danger" onClick={run(() => window.api.removeTorrent(t.id, deleteFiles))}>
-              Remove
+      {!streamOnly && (
+        <div className="torrent-actions">
+          {next && (
+            <button
+              className="primary"
+              title={displayPath(next.path, t.name)}
+              onClick={run(() => window.api.play(t.id, next.index))}
+            >
+              {next.positionSec > RESUME_MIN_SEC ? `Continue at ${formatClock(next.positionSec)}` : 'Play'}
+              {videos.length > 1 && ` · ${shortName(displayPath(next.path, t.name))}`}
             </button>
-            <button onClick={() => setConfirmRemove(false)}>Cancel</button>
-          </span>
-        )}
-      </div>
+          )}
+          {active ? (
+            <button onClick={run(() => window.api.pauseTorrent(t.id))}>Pause</button>
+          ) : (
+            <button onClick={run(() => window.api.resumeTorrent(t.id))}>
+              {t.status === 'done' ? 'Seed' : t.status === 'error' ? 'Retry' : 'Resume'}
+            </button>
+          )}
+          <button onClick={run(() => window.api.showTorrentInFolder(t.id))}>Show in folder</button>
+          {!confirmRemove ? (
+            <button onClick={() => setConfirmRemove(true)}>Remove</button>
+          ) : (
+            <span className="confirm">
+              <span className="muted">Its episodes stay in the library to stream.</span>
+              <label>
+                <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} />{' '}
+                Also delete the files
+              </label>
+              <button className="danger" onClick={run(() => window.api.removeTorrent(t.id, deleteFiles))}>
+                Remove
+              </button>
+              <button onClick={() => setConfirmRemove(false)}>Cancel</button>
+            </span>
+          )}
+        </div>
+      )}
 
       {expanded && (
         <ul className="files torrent-files">

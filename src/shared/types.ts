@@ -58,7 +58,11 @@ export interface TorrentInfo {
   series: string
 }
 
-export type TorrentStatus = 'starting' | 'downloading' | 'seeding' | 'done' | 'paused' | 'error'
+/**
+ * `streaming`: the player is streaming from a torrent with nothing kept.
+ * `idle`: nothing kept and not streaming; it's only there for its library episodes.
+ */
+export type TorrentStatus = 'starting' | 'downloading' | 'seeding' | 'done' | 'paused' | 'error' | 'streaming' | 'idle'
 
 export interface TorrentFileStatus {
   /** Index in the torrent's file list (stable; what selection uses). */
@@ -66,6 +70,7 @@ export interface TorrentFileStatus {
   path: string
   length: number
   progress: number
+  /** Downloaded to keep. Streamed files aren't selected. */
   selected: boolean
   /** Local HTTP URL that streams the file while it downloads; null when the torrent isn't active. */
   streamUrl: string | null
@@ -82,6 +87,8 @@ export interface TorrentStatusInfo {
   name: string
   savePath: string
   status: TorrentStatus
+  /** The player is streaming a file from it that isn't kept */
+  streaming: boolean
   error: string | null
   /** 0–1 over the selected files only */
   progress: number
@@ -125,6 +132,8 @@ export interface EpisodeInfo {
   title: string
   episodeNum: number | null
   sizeBytes: number
+  /** Downloaded (or downloading) to keep; otherwise it plays by streaming. */
+  downloaded: boolean
   positionSec: number
   durationSec: number | null
   watched: boolean
@@ -302,6 +311,7 @@ export interface AppApi {
   listTorrents(): Promise<TorrentStatusInfo[]>
   pauseTorrent(id: number): Promise<void>
   resumeTorrent(id: number): Promise<void>
+  /** Remove from Downloads; its episodes stay in the library to stream. */
   removeTorrent(id: number, deleteFiles: boolean): Promise<void>
   showTorrentInFolder(id: number): Promise<void>
 
@@ -312,7 +322,10 @@ export interface AppApi {
   onPlayerState(cb: (state: PlayerState) => void): () => void
   /** Place the video over this part of the page; null hides it. */
   setVideoBounds(rect: VideoRect | null): void
-  /** Add a torrent (if needed) and immediately start streaming one of its files. */
+  /**
+   * Add the torrent's episodes to the library without downloading them and
+   * start streaming one. Nothing is kept on disk after playback.
+   */
   streamNow(req: AddTorrentRequest, fileIndex: number): Promise<void>
   setWatched(torrentId: number, fileIndex: number, watched: boolean): Promise<void>
   getPlayerInfo(): Promise<PlayerInfo>
@@ -327,6 +340,15 @@ export interface AppApi {
   moveFolder(id: number, parentId: number | null): Promise<void>
   /** folderId null moves them to Unsorted */
   moveEpisodes(episodeIds: number[], folderId: number | null): Promise<void>
+  /** Download an episode that was only streamed, to keep it. */
+  downloadEpisode(episodeId: number): Promise<void>
+  /**
+   * Delete an episode's downloaded file; it stays in the library to stream.
+   * With removeFromLibrary it leaves the library too (the series stays).
+   */
+  deleteEpisode(episodeId: number, removeFromLibrary: boolean): Promise<void>
+  /** Hide a followed series' episode that isn't downloaded. */
+  dismissRelease(releaseId: number): Promise<void>
   /** The folder a release with this series name belongs in, matching by name and AniList entry. */
   suggestFolder(series: string): Promise<{ folderId: number | null; name: string }>
   searchAniList(query: string): Promise<AniListMedia[]>

@@ -815,12 +815,13 @@ button.danger {
   color: var(--muted);
 }
 /* On nyaa but not downloaded: dimmed until it's streamed or downloaded. */
-.episode.available {
-  cursor: default;
-}
-.episode.available .ep-title,
-.episode.available .ep-num {
+.downloaded-badge {
   color: var(--muted);
+}
+.ep-state.confirm {
+  gap: 8px;
+  flex-shrink: 1;
+  min-width: 0;
 }
 .follow-line {
   font-size: 13px;

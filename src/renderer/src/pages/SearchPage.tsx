@@ -199,6 +199,8 @@ function DetailPanel({
   const [checked, setChecked] = useState<Set<number>>(new Set())
   const [adding, setAdding] = useState(false)
   const [added, setAdded] = useState<string | null>(null)
+  /** The notice is about a stream, which isn't in Downloads */
+  const [streamed, setStreamed] = useState(false)
   const [followed, setFollowed] = useState<FollowResult | null>(null)
   const [folders, setFolders] = useState<FolderInfo[]>([])
   /** 'new', 'none' (Unsorted), or an existing folder id */
@@ -262,9 +264,10 @@ function DetailPanel({
   async function download(): Promise<void> {
     setAdding(true)
     setError(null)
+    setStreamed(false)
     try {
       const res = await window.api.addTorrent(request)
-      setAdded(res.existed ? 'Already in Downloads; any new files were added to it.' : 'Downloading.')
+      setAdded(res.existed ? 'Downloading; anything new was added to it.' : 'Downloading.')
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -279,7 +282,10 @@ function DetailPanel({
     setAdded(null)
     try {
       await window.api.streamNow(request, firstVideo.index)
-      setAdded('Opening in mpv. Playback starts once the first pieces arrive.')
+      setStreamed(true)
+      setAdded(
+        `Playing. Nothing is saved to disk; ${checked.size > 1 ? 'the episodes are' : "it's"} in the library to stream again or download.`
+      )
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -379,27 +385,30 @@ function DetailPanel({
       )}
 
       <div className="actions">
-        <button className="primary" disabled={!info || checked.size === 0 || adding} onClick={download}>
-          {adding
-            ? 'Adding…'
-            : info && info.files.length > 1
-              ? `Download ${checked.size} file${checked.size === 1 ? '' : 's'}`
-              : 'Download'}
-        </button>
         <button
+          className="primary"
           disabled={!firstVideo || adding}
           onClick={streamNow}
-          title={firstVideo ? `Play ${displayPath(firstVideo.path, info!.name)} while it downloads` : undefined}
+          title={
+            firstVideo
+              ? `Play ${displayPath(firstVideo.path, info!.name)} without saving it. The ticked episodes go in the library to stream.`
+              : undefined
+          }
         >
-          Stream now
+          {adding ? 'Adding…' : 'Stream'}
+        </button>
+        <button disabled={!info || checked.size === 0 || adding} onClick={download} title="Save to disk to keep">
+          {info && info.files.length > 1 ? `Download ${checked.size} file${checked.size === 1 ? '' : 's'}` : 'Download'}
         </button>
       </div>
       {added && (
         <div className="notice">
           {added}{' '}
-          <button className="link" onClick={onOpenDownloads}>
-            View downloads
-          </button>
+          {!streamed && (
+            <button className="link" onClick={onOpenDownloads}>
+              View downloads
+            </button>
+          )}
         </div>
       )}
       <div className="actions">

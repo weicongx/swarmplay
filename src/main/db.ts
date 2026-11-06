@@ -110,6 +110,10 @@ const MIGRATIONS: string[] = [
     added_at     INTEGER NOT NULL,
     UNIQUE (follow_id, episode_num)
   );
+  `,
+  `
+  -- An episode of a followed series the user removed from the library.
+  ALTER TABLE releases ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0;
   `
 ]
 

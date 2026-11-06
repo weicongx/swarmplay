@@ -1,16 +1,26 @@
-import type {
-  AddTorrentRequest,
-  AniListMedia,
-  AvailableEpisode,
-  EpisodeInfo,
-  FolderInfo,
-  FollowInfo,
-  LibraryData
+import {
+  VIDEO_EXT,
+  type AddTorrentRequest,
+  type AniListMedia,
+  type AvailableEpisode,
+  type EpisodeInfo,
+  type FolderInfo,
+  type FollowInfo,
+  type LibraryData
 } from '@shared/types'
 import { compareEpisodes, seriesKey } from '@shared/folders'
 import { fetchDescription, findSeries, recentCandidate, type Candidate } from './anilist'
-import { getDb } from './db'
-import { playableFiles, removeTorrent } from './torrent'
+import { getDb, getSettings } from './db'
+import { getTorrentInfo } from './nyaa'
+import {
+  addStream,
+  addTorrent,
+  deleteDownload,
+  downloadFile,
+  isKept,
+  pruneStreamTorrents,
+  removeTorrent
+} from './torrent'
 
 interface FolderRow {
   id: number
@@ -50,7 +60,13 @@ export function getLibrary(): LibraryData {
       anilist: f.anilist_meta ? (JSON.parse(f.anilist_meta) as AniListMedia) : null
     })
   )
-  // Only episodes that belong to a selected file (phase 3 could create rows for others).
+  // Which files each torrent keeps (NULL: all of them), to tell downloads from streamed episodes.
+  const kept = new Map(
+    (db.prepare('SELECT id, selected_files FROM torrents').all() as { id: number; selected_files: string | null }[]).map(
+      (t) => [t.id, t.selected_files == null ? null : new Set(JSON.parse(t.selected_files) as number[])]
+    )
+  )
+  // Rows with no title only hold a watched flag for a file never added to the library.
   const episodes = (
     db.prepare("SELECT * FROM episodes WHERE title != '' ORDER BY episode_num, title").all() as unknown as EpisodeRow[]
   ).map(
@@ -62,6 +78,7 @@ export function getLibrary(): LibraryData {
       title: e.title,
       episodeNum: e.episode_num,
       sizeBytes: e.size_bytes,
+      downloaded: kept.has(e.torrent_id) && (kept.get(e.torrent_id) == null || kept.get(e.torrent_id)!.has(e.file_index)),
       positionSec: e.position_sec,
       durationSec: e.duration_sec,
       watched: e.watched === 1,
@@ -104,13 +121,15 @@ export function getLibrary(): LibraryData {
 }
 
 /**
- * Releases of followed series not downloaded yet: their torrent isn't in
- * Downloads, and the folder has no episode with that number from another upload.
+ * Releases of followed series never played or downloaded: their torrent isn't
+ * added yet, the folder has no episode with that number from another upload,
+ * and the user didn't remove it.
  */
 export const AVAILABLE_SQL = `
   SELECT r.id, f.folder_id, r.follow_id, r.episode_num, r.title, r.size_bytes, r.published_at
   FROM releases r JOIN follows f ON f.id = r.follow_id
-  WHERE NOT EXISTS (SELECT 1 FROM torrents t WHERE t.info_hash = r.info_hash)
+  WHERE r.dismissed = 0
+    AND NOT EXISTS (SELECT 1 FROM torrents t WHERE t.info_hash = r.info_hash)
     AND NOT EXISTS (
       SELECT 1 FROM episodes e WHERE e.folder_id = f.folder_id AND e.episode_num = r.episode_num AND e.title != ''
     )`
@@ -225,8 +244,86 @@ export async function deleteFolder(id: number, deleteDownloads: boolean): Promis
     for (const { torrent_id } of torrentIds) await removeTorrent(torrent_id, true)
   }
 
+  // Episodes that were only streamed go with the folder; downloaded ones move to Unsorted.
+  const db = getDb()
+  const inTree = db
+    .prepare(`SELECT id, torrent_id, file_index FROM episodes WHERE folder_id IN (${subtree.map(() => '?').join(',')})`)
+    .all(...subtree) as { id: number; torrent_id: number; file_index: number }[]
+  const drop = db.prepare('DELETE FROM episodes WHERE id = ?')
+  for (const e of inTree) if (!isKept(e.torrent_id, e.file_index)) drop.run(e.id)
+
   // Child folders cascade; their episodes fall back to Unsorted (ON DELETE SET NULL).
-  getDb().prepare('DELETE FROM folders WHERE id = ?').run(id)
+  db.prepare('DELETE FROM folders WHERE id = ?').run(id)
+  await pruneStreamTorrents()
+}
+
+/** The torrent file behind a library episode. */
+export function episodeSource(episodeId: number): { torrentId: number; fileIndex: number } {
+  const e = getDb().prepare('SELECT torrent_id, file_index FROM episodes WHERE id = ?').get(episodeId) as
+    | { torrent_id: number; file_index: number }
+    | undefined
+  if (!e) throw new Error('That episode is no longer in the library')
+  return { torrentId: e.torrent_id, fileIndex: e.file_index }
+}
+
+export async function downloadEpisode(episodeId: number): Promise<void> {
+  const { torrentId, fileIndex } = episodeSource(episodeId)
+  await downloadFile(torrentId, fileIndex)
+}
+
+/**
+ * Delete an episode's download, keeping it in the library to stream; with
+ * `remove` it leaves the library too, and a followed series won't add it back.
+ */
+export async function deleteEpisode(episodeId: number, remove: boolean): Promise<void> {
+  const { torrentId, fileIndex } = episodeSource(episodeId)
+  if (isKept(torrentId, fileIndex)) await deleteDownload(torrentId, fileIndex)
+  if (!remove) return
+
+  const db = getDb()
+  const ep = db.prepare('SELECT folder_id, episode_num FROM episodes WHERE id = ?').get(episodeId) as
+    | { folder_id: number | null; episode_num: number | null }
+    | undefined
+  db.prepare('DELETE FROM episodes WHERE id = ?').run(episodeId)
+  if (ep?.folder_id != null && ep.episode_num != null) {
+    db.prepare(
+      'UPDATE releases SET dismissed = 1 WHERE episode_num = ? AND follow_id IN (SELECT id FROM follows WHERE folder_id = ?)'
+    ).run(ep.episode_num, ep.folder_id)
+  }
+  await pruneStreamTorrents()
+}
+
+export function dismissRelease(releaseId: number): void {
+  getDb().prepare('UPDATE releases SET dismissed = 1 WHERE id = ?').run(releaseId)
+}
+
+/**
+ * Add a followed series' release to the library: to stream (nothing kept), or
+ * to download. Returns its first video, for playing.
+ */
+export async function addRelease(
+  releaseId: number,
+  download: boolean
+): Promise<{ torrentId: number; fileIndex: number | null }> {
+  const rel = getDb()
+    .prepare(
+      'SELECT r.torrent_url, r.nyaa_id, f.folder_id FROM releases r JOIN follows f ON f.id = r.follow_id WHERE r.id = ?'
+    )
+    .get(releaseId) as { torrent_url: string; nyaa_id: number; folder_id: number } | undefined
+  if (!rel) throw new Error('That episode is no longer in the library.')
+
+  const info = await getTorrentInfo(getSettings().nyaaBaseUrl, rel.torrent_url)
+  const videos = info.files
+    .filter((f) => VIDEO_EXT.test(f.path))
+    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
+  const req = {
+    torrentUrl: rel.torrent_url,
+    nyaaId: rel.nyaa_id,
+    fileIndexes: videos.length ? videos.map((f) => f.index) : undefined
+  }
+  const folder = await resolveFolder({ id: rel.folder_id })
+  const { id } = download ? await addTorrent(req, folder) : await addStream(req, folder)
+  return { torrentId: id, fileIndex: videos[0]?.index ?? null }
 }
 
 export function moveFolder(id: number, parentId: number | null): void {
@@ -311,28 +408,34 @@ export function describeEpisode(
   }
 }
 
+/** An episode in the library, or a followed series' release that isn't added yet. */
+export type NextUp = { torrentId: number; fileIndex: number } | { releaseId: number }
+
 /**
  * The episode to autoplay after this one: the next in its folder by episode
- * number (so weekly single-episode torrents chain), else the next file in the torrent.
+ * number (so weekly single-episode torrents chain), including a followed
+ * series' episodes not played yet; for Unsorted, the next file in the torrent.
  */
-export function nextEpisode(torrentId: number, fileIndex: number): { torrentId: number; fileIndex: number } | null {
-  const db = getDb()
-  const current = db
+export function nextEpisode(torrentId: number, fileIndex: number): NextUp | null {
+  const current = getDb()
     .prepare('SELECT folder_id FROM episodes WHERE torrent_id = ? AND file_index = ?')
     .get(torrentId, fileIndex) as { folder_id: number | null } | undefined
+  const folderId = current?.folder_id ?? null
+  const lib = getLibrary()
 
-  if (current?.folder_id != null) {
-    const eps = getLibrary()
-      .episodes.filter((e) => e.folderId === current.folder_id)
-      .sort(compareEpisodes)
-    const i = eps.findIndex((e) => e.torrentId === torrentId && e.fileIndex === fileIndex)
-    const next = eps[i + 1]
-    return next ? { torrentId: next.torrentId, fileIndex: next.fileIndex } : null
-  }
+  const eps = lib.episodes
+    .filter((e) => e.folderId === folderId && (folderId !== null || e.torrentId === torrentId))
+    .sort(compareEpisodes)
+  const i = eps.findIndex((e) => e.torrentId === torrentId && e.fileIndex === fileIndex)
+  const next = i >= 0 ? eps[i + 1] : undefined
+  const num = i >= 0 ? eps[i].episodeNum : null
 
-  const queue = playableFiles(torrentId)
-  const next = queue[queue.indexOf(fileIndex) + 1]
-  return next !== undefined ? { torrentId, fileIndex: next } : null
+  const release =
+    folderId !== null && num != null
+      ? lib.available.filter((a) => a.folderId === folderId && a.episodeNum > num).sort((a, b) => a.episodeNum - b.episodeNum)[0]
+      : undefined
+  if (release && (next?.episodeNum == null || release.episodeNum < next.episodeNum)) return { releaseId: release.id }
+  return next ? { torrentId: next.torrentId, fileIndex: next.fileIndex } : null
 }
 
 // ---------------------------------------------------------------------------

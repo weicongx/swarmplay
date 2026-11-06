@@ -1,5 +1,6 @@
-import { mkdir, rm, rmdir } from 'fs/promises'
+import { copyFile, mkdir, readdir, rename, rm, rmdir } from 'fs/promises'
 import { existsSync } from 'fs'
+import { execFile } from 'child_process'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { EventEmitter } from 'events'
 import { BrowserWindow, shell } from 'electron'
@@ -21,6 +22,7 @@ interface WtFile {
   downloaded: number
   streamURL: string
   select(): void
+  deselect(): void
 }
 interface WtTorrent extends EventEmitter {
   ready: boolean
@@ -43,7 +45,7 @@ interface WtClient extends EventEmitter {
   destroy(cb?: () => void): void
 }
 
-type PersistedStatus = Exclude<TorrentStatus, 'starting'>
+type PersistedStatus = Exclude<TorrentStatus, 'starting' | 'streaming'>
 
 interface TorrentRow {
   id: number
@@ -62,6 +64,7 @@ interface TorrentRow {
 interface Entry {
   row: TorrentRow
   meta: ParsedTorrent
+  /** Files being downloaded to keep. Streamed files aren't in here. */
   selected: Set<number>
   /** Last known per-file progress, kept so inactive torrents still show it. */
   fileProgress: number[]
@@ -72,10 +75,25 @@ interface Entry {
    * so files that were on disk before (startup re-check) don't count as new downloads.
    */
   seenComplete?: Set<number>
+  /** The file the player is streaming from this torrent, if it isn't a kept download */
+  streamFile: number | null
+  /** Every file streamed since the stream started; their data is deleted when it ends */
+  streamed: Set<number>
+  /** Stopping, moving and deleting files run one at a time per torrent. */
+  lock: Promise<void>
 }
+
+/**
+ * Streams of episodes that aren't kept write into a hidden folder in the
+ * library root (one per torrent), deleted when playback ends. Same drive as the
+ * library, so keeping an episode mid-stream is a rename, not a copy.
+ */
+const STREAM_DIR = '.swarmplay-streaming'
 
 const entries = new Map<number, Entry>()
 const fileCompleteListeners: ((torrentId: number, fileIndex: number) => void)[] = []
+/** The torrent the player is streaming a not-kept file from */
+let streaming: Entry | null = null
 
 /** Called when a selected video finishes downloading while the app is running. */
 export function onFileComplete(cb: (torrentId: number, fileIndex: number) => void): void {
@@ -93,7 +111,7 @@ function getClient(): Promise<WtClient> {
     const c = new WebTorrent() as WtClient
     c.on('error', (err: Error) => console.error('[webtorrent]', err.message))
 
-    // Streams any file of any active torrent; mpv plays from here in phase 3.
+    // Streams any file of any active torrent; mpv plays from here.
     // `origin: false` is turned into '*' by webtorrent, so pass an origin no web page can have:
     // that keeps sites in a browser from reading the stream while mpv (which sends no Origin) works.
     const server = c.createServer({ hostname: '127.0.0.1', origin: 'null-origin.invalid' })
@@ -119,8 +137,28 @@ export async function initTorrents(): Promise<void> {
     const fileProgress = row.file_progress
       ? JSON.parse(row.file_progress)
       : meta.files.map(() => 0)
-    const entry: Entry = { row, meta, selected, fileProgress, torrent: null, error: null }
+    const entry: Entry = {
+      row,
+      meta,
+      selected,
+      fileProgress,
+      torrent: null,
+      error: null,
+      streamFile: null,
+      streamed: new Set(),
+      lock: Promise.resolve()
+    }
     entries.set(row.id, entry)
+
+    if (selected.size === 0 && row.status !== 'idle') setStatus(entry, 'idle')
+    // Left over from a stream the app quit during: clear it, or move what was kept.
+    if (isStreamDir(row.save_path)) {
+      if (selected.size === 0) {
+        await clearStreamDir(entry)
+      } else {
+        await moveToLibrary(entry).catch((err) => console.error('Failed to move a download:', err))
+      }
+    }
     syncEpisodes(entry) // torrents added before the library existed land in Unsorted
 
     if (row.status === 'seeding' && !seedAfterDownload) setStatus(entry, 'done')
@@ -129,6 +167,7 @@ export async function initTorrents(): Promise<void> {
     }
   }
 
+  await removeOrphanStreamDirs()
   setInterval(tick, 1000)
 }
 
@@ -146,50 +185,76 @@ export async function addTorrent(
 
   const wanted = req.fileIndexes ?? meta.files.map((f) => f.index)
   if (wanted.length === 0) throw new Error('Pick at least one file to download')
-  if (wanted.some((i) => !Number.isInteger(i) || i < 0 || i >= meta.files.length)) {
-    throw new Error('Invalid file selection')
-  }
+  checkIndexes(meta, wanted)
 
   const existing = [...entries.values()].find((e) => e.row.info_hash === meta.infoHash)
   if (existing) {
-    // Adding more episodes from a batch that's already downloading.
-    const added = wanted.filter((i) => !existing.selected.has(i))
-    for (const i of added) existing.selected.add(i)
-    saveSelection(existing)
-    syncEpisodes(existing, folder ? folder.id : undefined)
-    if (existing.torrent?.ready) for (const i of added) existing.torrent.files[i].select()
-    if (added.length > 0 && existing.row.status !== 'downloading') {
-      setStatus(existing, 'downloading')
-      if (!existing.torrent) start(existing)
-    }
+    // More episodes from a batch that's already here, or keeping one that was only streamed.
+    await keepFiles(existing, wanted, folder ? folder.id : undefined)
     return { id: existing.row.id, existed: true }
   }
 
   const savePath = folder ? join(settings.libraryRoot, safeDirName(folder.name)) : settings.libraryRoot
   await mkdir(savePath, { recursive: true })
   const selectedJson = wanted.length === meta.files.length ? null : JSON.stringify(wanted)
-  const now = Date.now()
-  const result = getDb()
-    .prepare(
-      `INSERT INTO torrents (info_hash, name, torrent_file, nyaa_id, save_path, status, progress, added_at, selected_files)
-       VALUES (?, ?, ?, ?, ?, 'downloading', 0, ?, ?)`
-    )
-    .run(meta.infoHash, meta.name, buf, req.nyaaId ?? null, savePath, now, selectedJson)
-
-  const id = Number(result.lastInsertRowid)
-  const row = getDb().prepare('SELECT * FROM torrents WHERE id = ?').get(id) as unknown as TorrentRow
-  const entry: Entry = {
-    row,
-    meta,
-    selected: new Set(wanted),
-    fileProgress: meta.files.map(() => 0),
-    torrent: null,
-    error: null
-  }
-  entries.set(id, entry)
+  const entry = insertTorrent(meta, buf, req.nyaaId, savePath, 'downloading', selectedJson)
   syncEpisodes(entry, folder?.id ?? null)
   start(entry)
-  return { id, existed: false }
+  return { id: entry.row.id, existed: false }
+}
+
+/**
+ * Add a torrent's episodes to the library without downloading anything. They
+ * play by streaming, and nothing stays on disk afterwards unless they're downloaded.
+ */
+export async function addStream(
+  req: AddTorrentRequest,
+  folder: { id: number; name: string } | null = null
+): Promise<AddTorrentResult> {
+  const buf = await fetchTorrentFile(getSettings().nyaaBaseUrl, req.torrentUrl)
+  const meta = parseTorrentFile(buf)
+  const wanted = req.fileIndexes ?? meta.files.map((f) => f.index)
+  checkIndexes(meta, wanted)
+  const videos = wanted.filter((i) => VIDEO_EXT.test(meta.files[i].path))
+  if (videos.length === 0) throw new Error('Pick at least one video to stream')
+
+  const existing = [...entries.values()].find((e) => e.row.info_hash === meta.infoHash)
+  if (existing) {
+    syncEpisodes(existing, folder ? folder.id : undefined, videos)
+    return { id: existing.row.id, existed: true }
+  }
+
+  const entry = insertTorrent(meta, buf, req.nyaaId, streamDirFor(meta.infoHash), 'idle', '[]')
+  syncEpisodes(entry, folder?.id ?? null, videos)
+  return { id: entry.row.id, existed: false }
+}
+
+/** Start keeping a file that was only streamed (or download it again after deleting it). */
+export async function downloadFile(torrentId: number, fileIndex: number): Promise<void> {
+  await keepFiles(mustGet(torrentId), [fileIndex])
+}
+
+/**
+ * Delete a kept file from disk. Its library episode stays, to stream later.
+ * Close the player first if it's playing from this torrent.
+ */
+export function deleteDownload(torrentId: number, fileIndex: number): Promise<void> {
+  const entry = mustGet(torrentId)
+  return withLock(entry, async () => {
+    if (entry.selected.delete(fileIndex)) saveSelection(entry)
+    entry.seenComplete?.delete(fileIndex)
+    const wasRunning = entry.row.status === 'downloading' || entry.row.status === 'seeding'
+    await stop(entry)
+    if (!isStreamDir(entry.row.save_path)) await deleteFilesOf(entry, [fileIndex])
+    if (entry.selected.size === 0) await becomeStreamOnly(entry, true)
+    else if (wasRunning) start(entry)
+    persistProgress(entry)
+    broadcast()
+  })
+}
+
+export function isKept(torrentId: number, fileIndex: number): boolean {
+  return entries.get(torrentId)?.selected.has(fileIndex) ?? false
 }
 
 export async function pauseTorrent(id: number): Promise<void> {
@@ -215,13 +280,52 @@ export async function resumeTorrent(id: number): Promise<void> {
   start(entry)
 }
 
+/** Remove a torrent and its library episodes entirely. */
 export async function removeTorrent(id: number, deleteFiles: boolean): Promise<void> {
   const entry = mustGet(id)
-  await stop(entry)
-  entries.delete(id)
-  getDb().prepare('DELETE FROM torrents WHERE id = ?').run(id)
-  if (deleteFiles) await deleteTorrentFiles(entry)
+  if (streaming === entry) streaming = null
+  await withLock(entry, async () => {
+    await stop(entry)
+    entries.delete(id)
+    getDb().prepare('DELETE FROM torrents WHERE id = ?').run(id)
+    if (deleteFiles) await deleteTorrentFiles(entry)
+  })
   broadcast()
+}
+
+/**
+ * Remove a torrent from Downloads. Its episodes stay in the library to stream;
+ * a torrent with no episodes there (no video files) goes completely.
+ */
+export async function removeDownload(id: number, deleteFiles: boolean): Promise<void> {
+  const entry = mustGet(id)
+  const { n } = getDb()
+    .prepare("SELECT COUNT(*) AS n FROM episodes WHERE torrent_id = ? AND title != ''")
+    .get(id) as { n: number }
+  if (n === 0) return removeTorrent(id, deleteFiles)
+
+  await withLock(entry, async () => {
+    await stop(entry)
+    if (deleteFiles && !isStreamDir(entry.row.save_path)) {
+      await deleteFilesOf(entry, entry.meta.files.map((f) => f.index))
+    }
+    entry.selected.clear()
+    saveSelection(entry)
+    entry.seenComplete = undefined
+    // Without deleteFiles the files stay where they are, no longer managed by the app.
+    await becomeStreamOnly(entry, false)
+    persistProgress(entry)
+  })
+  broadcast()
+}
+
+/** Remove torrents that only existed to stream episodes no longer in the library. */
+export async function pruneStreamTorrents(): Promise<void> {
+  const count = getDb().prepare("SELECT COUNT(*) AS n FROM episodes WHERE torrent_id = ? AND title != ''")
+  for (const entry of [...entries.values()]) {
+    if (entry.selected.size > 0 || streaming === entry) continue
+    if ((count.get(entry.row.id) as { n: number }).n === 0) await removeTorrent(entry.row.id, true)
+  }
 }
 
 export async function showTorrentInFolder(id: number): Promise<void> {
@@ -249,7 +353,9 @@ export function applyLimits(): void {
 
   if (!seedAfterDownload) {
     for (const entry of entries.values()) {
-      if (entry.row.status === 'seeding') stop(entry).then(() => setStatus(entry, 'done'))
+      if (entry.row.status !== 'seeding') continue
+      if (streaming === entry) setStatus(entry, 'done')
+      else stop(entry).then(() => setStatus(entry, 'done'))
     }
   }
 }
@@ -263,28 +369,40 @@ export interface PlaybackTarget {
 }
 
 /**
- * Get a file ready to play. Complete files play from disk; anything else is
- * selected for download, its torrent started if needed, and streamed over HTTP.
+ * Get a file ready to play. Kept files that are complete play from disk. Kept
+ * files still downloading stream from their download; any other file streams
+ * into the stream folder and is deleted when playback ends.
  */
 export async function preparePlayback(torrentId: number, fileIndex: number): Promise<PlaybackTarget> {
   const entry = mustGet(torrentId)
   const file = entry.meta.files[fileIndex]
   if (!file) throw new Error('That file is not in this torrent')
 
+  if (streaming && streaming !== entry) void endStream()
+  await entry.lock
+
+  const kept = entry.selected.has(fileIndex)
   const localPath = resolve(entry.row.save_path, file.path)
   const target = { title: basename(file.path), localPath, length: file.length }
-  if ((entry.fileProgress[fileIndex] ?? 0) >= 1 && existsSync(localPath)) {
+  if (kept && (entry.fileProgress[fileIndex] ?? 0) >= 1 && existsSync(localPath)) {
     return { ...target, source: localPath }
   }
 
-  if (!entry.selected.has(fileIndex)) {
-    entry.selected.add(fileIndex)
-    saveSelection(entry)
-    syncEpisodes(entry)
+  if (!kept) {
+    streaming = entry
+    const prev = entry.streamFile
+    if (prev != null && prev !== fileIndex && !entry.selected.has(prev) && entry.torrent?.ready) {
+      entry.torrent.files[prev].deselect()
+    }
+    entry.streamFile = fileIndex
+    entry.streamed.add(fileIndex)
+    syncEpisodes(entry, undefined, [fileIndex])
     if (entry.torrent?.ready) entry.torrent.files[fileIndex].select()
+  } else if (!entry.torrent) {
+    setStatus(entry, 'downloading')
   }
   if (!entry.torrent) {
-    setStatus(entry, 'downloading')
+    await ensureDir(entry.row.save_path)
     start(entry)
   }
 
@@ -292,13 +410,32 @@ export async function preparePlayback(torrentId: number, fileIndex: number): Pro
   return { ...target, source: `http://127.0.0.1:${serverPort}${torrent.files[fileIndex].streamURL}` }
 }
 
-/** Selected video files of a torrent, in episode order. */
-export function playableFiles(torrentId: number): number[] {
-  const entry = mustGet(torrentId)
-  return entry.meta.files
-    .filter((f) => entry.selected.has(f.index) && VIDEO_EXT.test(f.path))
-    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
-    .map((f) => f.index)
+/**
+ * Playback stopped: drop what was streamed. The torrent stops unless it has
+ * kept files still downloading or seeding, and a file kept mid-stream moves
+ * into its library folder.
+ */
+export function endStream(): Promise<void> {
+  const entry = streaming
+  if (!entry) return Promise.resolve()
+  streaming = null
+  return withLock(entry, async () => {
+    if (streaming === entry || !entries.has(entry.row.id)) return // playing from it again already
+    const streamed = [...entry.streamed]
+    entry.streamed.clear()
+    entry.streamFile = null
+    const resume = entry.row.status === 'downloading' || entry.row.status === 'seeding'
+    await stop(entry)
+    if (isStreamDir(entry.row.save_path)) {
+      if (entry.selected.size === 0) await clearStreamDir(entry)
+      else await moveToLibrary(entry)
+    } else {
+      await deleteFilesOf(entry, streamed.filter((i) => !entry.selected.has(i)))
+    }
+    persistProgress(entry)
+    if (resume) start(entry)
+    broadcast()
+  })
 }
 
 function waitForReady(entry: Entry, timeoutMs = 60_000): Promise<WtTorrent> {
@@ -328,9 +465,127 @@ function mustGet(id: number): Entry {
   return entry
 }
 
+function checkIndexes(meta: ParsedTorrent, indexes: number[]): void {
+  if (indexes.some((i) => !Number.isInteger(i) || i < 0 || i >= meta.files.length)) {
+    throw new Error('Invalid file selection')
+  }
+}
+
+function insertTorrent(
+  meta: ParsedTorrent,
+  buf: Buffer,
+  nyaaId: number | undefined,
+  savePath: string,
+  status: PersistedStatus,
+  selectedJson: string | null
+): Entry {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO torrents (info_hash, name, torrent_file, nyaa_id, save_path, status, progress, added_at, selected_files)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    )
+    .run(meta.infoHash, meta.name, buf, nyaaId ?? null, savePath, status, Date.now(), selectedJson)
+  const id = Number(result.lastInsertRowid)
+  const row = getDb().prepare('SELECT * FROM torrents WHERE id = ?').get(id) as unknown as TorrentRow
+  const entry: Entry = {
+    row,
+    meta,
+    selected: new Set(selectedJson ? (JSON.parse(selectedJson) as number[]) : meta.files.map((f) => f.index)),
+    fileProgress: meta.files.map(() => 0),
+    torrent: null,
+    error: null,
+    streamFile: null,
+    streamed: new Set(),
+    lock: Promise.resolve()
+  }
+  entries.set(id, entry)
+  return entry
+}
+
+/** Mark files to keep and download them, moving a streamed torrent into the library. */
+async function keepFiles(entry: Entry, indexes: number[], folderId?: number | null): Promise<void> {
+  const added = indexes.filter((i) => !entry.selected.has(i))
+  for (const i of added) entry.selected.add(i)
+  saveSelection(entry)
+  syncEpisodes(entry, folderId)
+  if (added.length === 0) return
+
+  // While it's streaming the data stays put; endStream() moves it afterwards.
+  if (isStreamDir(entry.row.save_path) && streaming !== entry) {
+    await withLock(entry, async () => {
+      await stop(entry)
+      await moveToLibrary(entry)
+    })
+  }
+  if (entry.torrent?.ready) for (const i of added) entry.torrent.files[i].select()
+  if (entry.row.status !== 'downloading') {
+    setStatus(entry, 'downloading')
+    if (!entry.torrent) {
+      await ensureDir(entry.row.save_path)
+      start(entry)
+    }
+  }
+}
+
+/** Nothing of this torrent is kept any more: it's only a source to stream from. */
+async function becomeStreamOnly(entry: Entry, deleteLeftovers: boolean): Promise<void> {
+  if (!isStreamDir(entry.row.save_path)) {
+    // Pieces at file boundaries leave fragments of neighbouring files behind.
+    if (deleteLeftovers) await deleteFilesOf(entry, entry.meta.files.map((f) => f.index))
+    setSavePath(entry, streamDirFor(entry.row.info_hash))
+  } else {
+    await clearStreamDir(entry)
+  }
+  entry.fileProgress = entry.meta.files.map(() => 0)
+  setStatus(entry, 'idle')
+}
+
+/**
+ * Move a torrent's kept files out of its stream folder into the library
+ * folder of its episodes. The torrent must be stopped.
+ */
+async function moveToLibrary(entry: Entry): Promise<void> {
+  const folder = getDb()
+    .prepare(
+      `SELECT f.name FROM episodes e JOIN folders f ON f.id = e.folder_id
+       WHERE e.torrent_id = ? AND e.title != '' LIMIT 1`
+    )
+    .get(entry.row.id) as { name: string } | undefined
+  const root = getSettings().libraryRoot
+  let target = folder ? join(root, safeDirName(folder.name)) : root
+  const from = resolve(entry.row.save_path)
+  const kept = entry.meta.files.filter((f) => entry.selected.has(f.index))
+  // Never write over another release's file with the same name.
+  if (kept.some((f) => existsSync(resolve(target, f.path)))) {
+    target = join(target, `${safeDirName(entry.meta.name)} (${entry.row.info_hash.slice(0, 8)})`)
+  }
+
+  for (const f of kept) {
+    const src = resolve(from, f.path)
+    const dst = resolve(target, f.path)
+    if (!existsSync(src) || existsSync(dst)) continue
+    await mkdir(dirname(dst), { recursive: true })
+    await rename(src, dst).catch(async () => {
+      await copyFile(src, dst)
+      await rm(src, { force: true })
+    })
+  }
+  await rm(from, { recursive: true, force: true, maxRetries: 5 }).catch(() => {})
+  await mkdir(target, { recursive: true })
+  setSavePath(entry, target)
+}
+
+function setSavePath(entry: Entry, path: string): void {
+  const db = getDb()
+  entry.row.save_path = path
+  db.prepare('UPDATE torrents SET save_path = ? WHERE id = ?').run(path, entry.row.id)
+  const update = db.prepare('UPDATE episodes SET file_path = ? WHERE torrent_id = ? AND file_index = ?')
+  for (const f of entry.meta.files) update.run(resolve(path, f.path), entry.row.id, f.index)
+}
+
 async function start(entry: Entry): Promise<void> {
   entry.error = null
-  if (entry.row.status === 'error') setStatus(entry, 'downloading')
+  if (entry.row.status === 'error') setStatus(entry, entry.selected.size > 0 ? 'downloading' : 'idle')
   const c = await getClient()
   if (entry.torrent || !entries.has(entry.row.id)) return
 
@@ -342,6 +597,7 @@ async function start(entry: Entry): Promise<void> {
 
   torrent.on('ready', () => {
     for (const i of entry.selected) torrent.files[i].select()
+    if (entry.streamFile != null) torrent.files[entry.streamFile].select()
   })
   torrent.on('error', (err: Error) => {
     entry.error = err.message
@@ -359,16 +615,22 @@ function stop(entry: Entry): Promise<void> {
   return new Promise((r) => client!.remove(torrent, { destroyStore: false }, () => r()))
 }
 
+function withLock(entry: Entry, fn: () => Promise<void>): Promise<void> {
+  const run = entry.lock.then(fn)
+  entry.lock = run.catch(() => {})
+  return run
+}
+
 function setStatus(entry: Entry, status: PersistedStatus): void {
   entry.row.status = status
   getDb().prepare('UPDATE torrents SET status = ? WHERE id = ?').run(status, entry.row.id)
 }
 
 /**
- * Make sure every selected video has a library episode row. New rows go to
- * `folderId` if given, otherwise to whichever folder this torrent already uses.
+ * Make sure every selected video (and any in `extra`) has a library episode row.
+ * New rows go to `folderId` if given, otherwise to whichever folder this torrent already uses.
  */
-function syncEpisodes(entry: Entry, folderId?: number | null): void {
+function syncEpisodes(entry: Entry, folderId?: number | null, extra: number[] = []): void {
   const db = getDb()
   const folder =
     folderId !== undefined
@@ -379,18 +641,19 @@ function syncEpisodes(entry: Entry, folderId?: number | null): void {
             .get(entry.row.id) as { folder_id: number } | undefined
         )?.folder_id ?? null)
 
-  // Rows made by phase 3 playback may lack a title or episode number; fill those in.
+  // Rows made by marking a file watched lack a title or episode number; fill those in.
   const upsert = db.prepare(
     `INSERT INTO episodes (folder_id, torrent_id, file_index, title, episode_num, file_path, size_bytes)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(torrent_id, file_index) DO UPDATE SET
        title = CASE WHEN episodes.title = '' THEN excluded.title ELSE episodes.title END,
+       folder_id = CASE WHEN episodes.title = '' THEN excluded.folder_id ELSE episodes.folder_id END,
        episode_num = COALESCE(episodes.episode_num, excluded.episode_num),
        file_path = excluded.file_path,
        size_bytes = excluded.size_bytes`
   )
   for (const f of entry.meta.files) {
-    if (!entry.selected.has(f.index) || !VIDEO_EXT.test(f.path)) continue
+    if ((!entry.selected.has(f.index) && !extra.includes(f.index)) || !VIDEO_EXT.test(f.path)) continue
     const title = basename(f.path)
     upsert.run(folder, entry.row.id, f.index, title, parseRelease(title).episode, resolve(entry.row.save_path, f.path), f.length)
   }
@@ -464,13 +727,16 @@ function statusOf(entry: Entry): TorrentStatusInfo {
   })
 
   const downloadSpeed = active?.downloadSpeed ?? 0
-  const status: TorrentStatus = torrent && !torrent.ready ? 'starting' : row.status
+  const isStreaming = streaming === entry
+  const status: TorrentStatus =
+    isStreaming && entry.selected.size === 0 ? 'streaming' : torrent && !torrent.ready ? 'starting' : row.status
   return {
     id: row.id,
     infoHash: row.info_hash,
     name: row.name,
     savePath: row.save_path,
     status,
+    streaming: isStreaming,
     error: entry.error,
     progress: length ? downloaded / length : 0,
     downloaded,
@@ -512,6 +778,8 @@ function tick(): void {
       getDb().prepare('UPDATE torrents SET completed_at = ? WHERE id = ?').run(Date.now(), entry.row.id)
       persistProgress(entry)
       if (seedAfterDownload) setStatus(entry, 'seeding')
+      // A stream from it keeps it running; endStream() stops it.
+      else if (streaming === entry) setStatus(entry, 'done')
       else stop(entry).then(() => setStatus(entry, 'done'))
     } else if (!complete && entry.row.status === 'seeding') {
       setStatus(entry, 'downloading')
@@ -528,17 +796,71 @@ function broadcast(): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send('torrents:update', list)
 }
 
-async function deleteTorrentFiles({ row, meta }: Entry): Promise<void> {
-  const root = resolve(row.save_path)
+async function deleteTorrentFiles(entry: Entry): Promise<void> {
+  if (isStreamDir(entry.row.save_path)) await clearStreamDir(entry)
+  else await deleteFilesOf(entry, entry.meta.files.map((f) => f.index))
+}
+
+/**
+ * Delete some of a torrent's files from its save folder, then any folders that
+ * leaves empty. Skips files another torrent keeps at the same path.
+ */
+async function deleteFilesOf(entry: Entry, indexes: number[]): Promise<void> {
+  if (indexes.length === 0) return
+  const root = resolve(entry.row.save_path)
+  const keptElsewhere = new Set<string>()
+  for (const other of entries.values()) {
+    if (other === entry) continue
+    for (const i of other.selected) {
+      keptElsewhere.add(resolve(other.row.save_path, other.meta.files[i].path).toLowerCase())
+    }
+  }
   const dirs = new Set<string>()
-  for (const f of meta.files) {
-    const p = resolve(root, f.path)
-    if (!p.startsWith(root + sep)) continue // never delete outside the library folder
-    await rm(p, { force: true })
+  for (const i of indexes) {
+    const p = resolve(root, entry.meta.files[i].path)
+    if (!p.startsWith(root + sep) || keptElsewhere.has(p.toLowerCase())) continue // never outside the folder
+    // mpv may still be letting go of the file.
+    await rm(p, { force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
+    entry.fileProgress[i] = 0
     for (let d = dirname(p); d.startsWith(root + sep); d = dirname(d)) dirs.add(d)
   }
   // Remove now-empty folders, deepest first; rmdir fails harmlessly on non-empty ones.
   for (const d of [...dirs].sort((a, b) => b.length - a.length)) {
     await rmdir(d).catch(() => {})
+  }
+}
+
+// --- Stream folders ---------------------------------------------------------
+
+function streamDirFor(infoHash: string): string {
+  return join(getSettings().libraryRoot, STREAM_DIR, infoHash)
+}
+
+function isStreamDir(path: string): boolean {
+  return basename(dirname(resolve(path))) === STREAM_DIR
+}
+
+async function clearStreamDir(entry: Entry): Promise<void> {
+  if (isStreamDir(entry.row.save_path)) {
+    await rm(entry.row.save_path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
+  }
+  for (const f of entry.meta.files) if (!entry.selected.has(f.index)) entry.fileProgress[f.index] = 0
+}
+
+async function ensureDir(path: string): Promise<void> {
+  await mkdir(path, { recursive: true })
+  // Keep the stream folder out of sight in Explorer.
+  if (isStreamDir(path)) execFile('attrib', ['+h', dirname(path)], () => {})
+}
+
+/** Stream folders no torrent uses, e.g. after a torrent was removed mid-stream. */
+async function removeOrphanStreamDirs(): Promise<void> {
+  const root = join(getSettings().libraryRoot, STREAM_DIR)
+  const used = new Set([...entries.values()].map((e) => resolve(e.row.save_path).toLowerCase()))
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const p = join(root, name)
+    if (/^[0-9a-f]{40}$/i.test(name) && !used.has(resolve(p).toLowerCase())) {
+      await rm(p, { recursive: true, force: true }).catch(() => {})
+    }
   }
 }

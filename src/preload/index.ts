@@ -39,6 +39,10 @@ const api: AppApi = {
   deleteFolder: (id, deleteDownloads) => ipcRenderer.invoke('library:deleteFolder', id, deleteDownloads),
   moveFolder: (id, parentId) => ipcRenderer.invoke('library:moveFolder', id, parentId),
   moveEpisodes: (ids, folderId) => ipcRenderer.invoke('library:moveEpisodes', ids, folderId),
+  downloadEpisode: (episodeId) => ipcRenderer.invoke('library:downloadEpisode', episodeId),
+  deleteEpisode: (episodeId, removeFromLibrary) =>
+    ipcRenderer.invoke('library:deleteEpisode', episodeId, removeFromLibrary),
+  dismissRelease: (releaseId) => ipcRenderer.invoke('releases:dismiss', releaseId),
   suggestFolder: (series) => ipcRenderer.invoke('library:suggestFolder', series),
   searchAniList: (query) => ipcRenderer.invoke('anilist:search', query),
   linkFolder: (folderId, anilistId) => ipcRenderer.invoke('library:linkFolder', folderId, anilistId),

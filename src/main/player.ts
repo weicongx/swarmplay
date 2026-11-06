@@ -12,8 +12,8 @@ import {
   type VideoRect
 } from '@shared/types'
 import { getDb, getSettings, setSettings } from './db'
-import { describeEpisode, nextEpisode } from './library'
-import { preparePlayback, type PlaybackTarget } from './torrent'
+import { addRelease, describeEpisode, nextEpisode } from './library'
+import { endStream, preparePlayback, type PlaybackTarget } from './torrent'
 
 // One mpv instance is reused for every episode, driven over its JSON IPC pipe.
 // It renders into a frameless child window ("host") kept on top of the video
@@ -222,12 +222,19 @@ export function stopPlayer(): void {
   proc?.kill()
 }
 
+/** Stop playback if it's from this torrent, e.g. before deleting its files. */
+export function closeIfPlaying(torrentId: number): void {
+  if (state.open && state.torrentId === torrentId) closePlayer()
+}
+
 // ---------------------------------------------------------------------------
 
 function closePlayer(): void {
   saveCurrent()
   current = null
   command('stop')
+  // Streamed data is deleted once mpv lets go of it (the delete retries if it's still busy).
+  endStream().catch((err) => console.error('Failed to clean up a stream:', err))
   if (mainWin?.isFullScreen()) mainWin.setFullScreen(false)
   setState({ ...blankState(), volume: state.volume, muted: state.muted, upscaler: state.upscaler })
   placeHost()
@@ -280,7 +287,16 @@ function playNext(onlyIfFinished: boolean): void {
     if (onlyIfFinished) closePlayer()
     return
   }
-  play(next.torrentId, next.fileIndex).catch((err) => setState({ error: `Couldn't play the next episode: ${err.message}` }))
+  const go =
+    'releaseId' in next
+      ? // A followed series' next episode that isn't in the library yet: add it to stream.
+        (setState({ buffering: true }),
+        addRelease(next.releaseId, false).then(({ torrentId, fileIndex }) => {
+          if (fileIndex == null) throw new Error('that torrent has no video file')
+          return play(torrentId, fileIndex)
+        }))
+      : play(next.torrentId, next.fileIndex)
+  go.catch((err) => setState({ buffering: false, error: `Couldn't play the next episode: ${err.message}` }))
 }
 
 function setState(patch: Partial<PlayerState>, immediate = true): void {
@@ -415,6 +431,7 @@ async function ensureMpv(mpvPath: string): Promise<void> {
     current = null
     if (state.open) setState({ ...blankState(), error: null })
     placeHost()
+    endStream().catch(() => {})
   })
 
   sock = await connectWithRetry()

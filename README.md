@@ -1,13 +1,14 @@
 # Swarmplay
 
-A Windows desktop app for watching anime from torrents. Search nyaa.si, pick a release, and start watching in the app while it downloads. Episodes land in a library of series folders with AniList cover art, and playback picks up where you left off.
+A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a release, and start watching in the app within seconds, without saving the episode to disk. Episodes land in a library of series folders with AniList cover art, playback picks up where you left off, and you can download any episode to keep it.
 
 ## Features
 
 - **Search nyaa.si** by category and filter (trusted only, no remakes) and sort by seeders, size or date. Open any result to see its file list before downloading.
-- **Stream while downloading.** Pick which files you want, then press *Stream now* to play the first episode within seconds. WebTorrent fetches the pieces near the playhead first.
+- **Streaming first.** Press **Stream** to play an episode within seconds. WebTorrent fetches the pieces near the playhead first. Nothing is kept: the data goes to a hidden temporary folder that's deleted when playback stops. The episode stays in the library so you can stream it again.
+- **Download only what you want to keep.** Press **Download** in Search, or on any library episode, even mid-stream. An episode streamed and then downloaded keeps what's already fetched.
 - **In-app player.** mpv draws the video inside the app window, with Swarmplay's own controls: seek bar, volume, audio and subtitle tracks, and fullscreen.
-- **Resume and autoplay.** Your position saves every few seconds. An episode counts as watched at 90%, and the next one in the folder starts automatically.
+- **Resume and autoplay.** Your position saves every few seconds. An episode counts as watched at 90%, and the next one in the folder starts automatically, including new episodes of a followed series you haven't streamed yet.
 - **Upscaling.** Two options:
   - Anime4K shaders, which run on any GPU.
   - NVIDIA RTX Video Super Resolution, which needs an RTX card.
@@ -17,6 +18,7 @@ A Windows desktop app for watching anime from torrents. Search nyaa.si, pick a r
   - New downloads go into one folder per series. The folder name is parsed from the release name, with the season normalized (*S2*, *2nd Season* and *- S02* all become *Show S2*).
   - Folders can be nested and renamed.
   - Episodes move between folders by drag and drop.
+  - Each episode has **Delete**. For a downloaded episode, **Delete file** frees the space and keeps the episode to stream, and **Remove from library** takes it out entirely. The series folder stays either way.
 - **Follow a series.** Pick any episode in Search and choose **Add series to library**. Swarmplay finds that group's other uploads of the series (same season and resolution) and lists them in the folder without downloading, each with **Stream** and **Download**. It checks nyaa every 30 minutes and adds new episodes as they come out, with a notification.
 - **AniList.** Folders link to their AniList entry for the cover, alternate titles and episode count. An English-titled release still finds the folder you named in romaji. *Continue watching* sits at the top of the library.
 - **Background downloads.** Downloads keep going from the tray when you close the window. Swarmplay notifies you when an episode finishes, and seeds afterwards if you want.
@@ -57,10 +59,10 @@ npm run dev
 ## Using it
 
 1. **Search.** Type a show name. Click a result to open its details, tick the episodes you want, and pick a library folder (one is suggested from the release name).
-2. **Download** saves the files in the background. **Stream now** also starts playing right away.
-3. **Downloads** shows progress, speed and peers for each torrent, with pause, resume and remove. Remove can keep or delete the files.
-4. **Add series to library** (in the same panel) follows the series instead of downloading one episode. Its episodes show up in the folder as *Not downloaded* until you stream or download them. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
-5. **Library** holds your series folders. Click an episode to play it. Use **Find on AniList** when a folder didn't get a cover automatically.
+2. **Stream** plays the first ticked episode right away and adds the episodes to the library without saving them. **Download** saves the files in the background.
+3. **Downloads** shows progress, speed and peers for each download, with pause, resume and remove. Remove keeps the episodes in the library to stream, and can also delete the files. While you stream, the stream shows here too.
+4. **Add series to library** (in the same panel) follows the series instead of picking one episode. Its new episodes show up in the folder with **Stream** and **Download**, and **Remove** hides one you don't want. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
+5. **Library** holds your series folders. Click an episode to play it. Each episode shows whether it's downloaded, with **Download** and **Delete**. Use **Find on AniList** when a folder didn't get a cover automatically.
 
 ### Player keys
 
@@ -111,6 +113,7 @@ nyaa.si RSS ──► search results ──► .torrent ──► WebTorrent ─
   - WebTorrent serves every active torrent at `http://127.0.0.1:<port>/webtorrent/<infoHash>/<path>`. mpv plays from that URL, and each range request moves WebTorrent's download priority to the pieces mpv is reading.
   - The server only answers requests that carry no browser `Origin`, so web pages can't read from it.
   - Files that are already complete play straight from disk.
+  - A stream-only torrent saves into `<library>\.swarmplay-streaming\<infoHash>`, a hidden folder on the same drive as the library. When playback stops (or another episode starts) the torrent is stopped and that folder is deleted. Downloading an episode mid-stream keeps the data. When playback stops, the file is moved (a rename, since it's the same drive) into the series folder. Leftover stream folders are cleared at startup.
 - **Pause.** Pausing removes the torrent from the WebTorrent client entirely, because WebTorrent's own pause only stops new connections. Resuming re-adds the torrent and re-checks the pieces already on disk.
 - **Player.**
   - One long-lived mpv process (`--idle`) is controlled over a named pipe. It renders with `--wid` into a borderless child window that the main process keeps positioned over the player page's video area. The page draws the controls on top.

@@ -195,13 +195,19 @@ function FolderHeader({
   const [deleteDownloads, setDeleteDownloads] = useState(false)
   const [picking, setPicking] = useState(false)
 
-  const next = episodes.find((e) => !e.watched) ?? episodes[0]
   const watched = episodes.filter((e) => e.watched).length
-  const nested = subtreeEpisodes(lib, folder.id).length
+  const downloaded = episodes.filter((e) => e.downloaded).length
+  const total = episodes.length + available.length
+  const nested = subtreeEpisodes(lib, folder.id).filter((e) => e.downloaded).length
   const a = folder.anilist
   const follows = lib.follows.filter((f) => f.folderId === folder.id)
-  // Nothing downloaded to continue with: offer to stream the first available episode.
-  const streamFirst = !next ? available[0] : undefined
+  // Up next: the first unwatched episode, which may be a followed series' episode not played yet.
+  const lastWatched = Math.max(-Infinity, ...episodes.filter((e) => e.watched && e.episodeNum != null).map((e) => e.episodeNum!))
+  const nextEp = episodes.find((e) => !e.watched)
+  const nextRelease = available.find((r) => r.episodeNum > lastWatched)
+  const streamFirst =
+    nextRelease && (nextEp?.episodeNum == null || nextRelease.episodeNum < nextEp.episodeNum) ? nextRelease : undefined
+  const next = streamFirst ? undefined : (nextEp ?? (available.length ? undefined : episodes[0]))
 
   return (
     <div className="library-head folder-head">
@@ -242,10 +248,10 @@ function FolderHeader({
         </p>
       )}
       <p className="muted">
-        {episodes.length} episode{episodes.length === 1 ? '' : 's'}
+        {total} episode{total === 1 ? '' : 's'}
         {a?.episodes ? ` of ${a.episodes}` : ''}
-        {episodes.length > 0 && ` · ${watched} watched`}
-        {available.length > 0 && ` · ${available.length} not downloaded`}
+        {total > 0 && ` · ${watched} watched`}
+        {downloaded > 0 && ` · ${downloaded} downloaded`}
       </p>
       {follows.map((f) => (
         <FollowLine key={f.id} follow={f} run={run} />
@@ -262,7 +268,7 @@ function FolderHeader({
         )}
         {streamFirst && (
           <button className="primary" onClick={() => run(() => window.api.streamRelease(streamFirst.id))}>
-            Stream Ep {streamFirst.episodeNum}
+            Play Ep {streamFirst.episodeNum}
           </button>
         )}
         <NewFolderButton parentId={folder.id} label="New subfolder" run={run} />
@@ -280,7 +286,9 @@ function FolderHeader({
         ) : (
           <span className="confirm">
             <span className="muted">
-              {nested > 0 ? `Its ${nested} episode${nested === 1 ? '' : 's'} move to Unsorted.` : 'It is empty.'}
+              {nested > 0
+                ? `Its ${nested} downloaded episode${nested === 1 ? '' : 's'} move to Unsorted.`
+                : 'Nothing in it is downloaded.'}
             </span>
             {nested > 0 && (
               <label>
@@ -551,7 +559,7 @@ function FolderGrid({
       {folders.map((f) => {
         const eps = subtreeEpisodes(lib, f.id)
         const watched = eps.filter((e) => e.watched).length
-        const notDownloaded = lib.available.filter((a) => a.folderId === f.id).length
+        const total = eps.length + lib.available.filter((a) => a.folderId === f.id).length
         return (
           <DropTarget
             key={f.id}
@@ -566,12 +574,11 @@ function FolderGrid({
               {f.name}
             </div>
             <div className="muted folder-meta">
-              {eps.length} ep{eps.length === 1 ? '' : 's'}
-              {eps.length > 0 && ` · ${watched} watched`}
-              {notDownloaded > 0 && ` · ${notDownloaded} to get`}
+              {total} ep{total === 1 ? '' : 's'}
+              {total > 0 && ` · ${watched} watched`}
             </div>
             <div className="progress thin">
-              <div className="progress-fill" style={{ width: eps.length ? `${(watched / eps.length) * 100}%` : 0 }} />
+              <div className="progress-fill" style={{ width: total ? `${(watched / total) * 100}%` : 0 }} />
             </div>
           </DropTarget>
         )
@@ -684,94 +691,157 @@ function EpisodeList({
   }
   return (
     <ul className="episode-list">
-      {rows.map((row) => {
-        if (row.kind === 'available') {
-          const a = row.a
-          return (
-            <li key={`r${a.id}`} className="episode available">
-              <button className="play-file" title="Stream" onClick={() => run(() => window.api.streamRelease(a.id))}>
-                ▶
-              </button>
-              <span className="ep-num">Ep {a.episodeNum}</span>
-              <span className="ep-title" title={a.title}>
-                {a.title}
-              </span>
-              <span className="ep-state">
-                <span className="muted">Not downloaded · {formatAge(new Date(a.publishedAt).toISOString())}</span>
-                <span className="muted">{formatBytes(a.sizeBytes)}</span>
-                <button className="link" onClick={() => run(() => window.api.streamRelease(a.id))}>
-                  Stream
-                </button>
-                <button className="link" onClick={() => run(() => window.api.downloadRelease(a.id))}>
-                  Download
-                </button>
-              </span>
-            </li>
-          )
-        }
-        const e = row.e
-        const t = torrents.get(e.torrentId)
-        const file = t?.files[e.fileIndex]
-        const progress = file?.progress ?? 0
-        return (
-          <li
-            key={e.id}
-            className={`episode ${e.watched ? 'watched' : ''}`}
-            draggable
-            onDragStart={(ev) => startDrag(ev, { type: 'episode', id: e.id })}
-          >
-            <button className="play-file" title="Play" onClick={() => run(() => window.api.play(e.torrentId, e.fileIndex))}>
-              ▶
-            </button>
-            <span className="ep-num">{e.episodeNum != null ? `Ep ${e.episodeNum}` : '—'}</span>
-            <span className="ep-title" title={e.title}>
-              {e.title}
-            </span>
-            <span className="ep-state">
-              {progress < 1 && (
-                <span className="ep-download" title={t ? `Torrent ${t.status}` : undefined}>
-                  {t?.status === 'paused' ? 'Paused' : 'Downloading'} {(progress * 100).toFixed(0)}%
-                </span>
-              )}
-              {e.watched ? (
-                <span className="watched-badge">Watched</span>
-              ) : e.positionSec > RESUME_MIN_SEC ? (
-                <span className="resume-at">
-                  {formatClock(e.positionSec)}
-                  {e.durationSec ? ` / ${formatClock(e.durationSec)}` : ''}
-                </span>
-              ) : null}
-              <span className="muted">{formatBytes(e.sizeBytes)}</span>
-              <button className="link" onClick={() => run(() => window.api.setWatched(e.torrentId, e.fileIndex, !e.watched))}>
-                {e.watched ? 'Mark unwatched' : 'Mark watched'}
-              </button>
-              <select
-                className="move-to"
-                value=""
-                title="Move to folder"
-                onChange={(ev) => {
-                  const v = ev.target.value
-                  run(() => window.api.moveEpisodes([e.id], v === 'unsorted' ? null : Number(v)))
-                }}
-              >
-                <option value="" disabled>
-                  Move to…
-                </option>
-                {options
-                  .filter(({ folder }) => folder.id !== e.folderId)
-                  .map(({ folder, depth }) => (
-                    <option key={folder.id} value={folder.id}>
-                      {' '.repeat(depth)}
-                      {folder.name}
-                    </option>
-                  ))}
-                {e.folderId !== null && <option value="unsorted">Unsorted</option>}
-              </select>
-            </span>
-          </li>
+      {rows.map((row) =>
+        row.kind === 'available' ? (
+          <ReleaseRow key={`r${row.a.id}`} a={row.a} run={run} />
+        ) : (
+          <EpisodeRow key={row.e.id} e={row.e} t={torrents.get(row.e.torrentId)} options={options} run={run} />
         )
-      })}
+      )}
     </ul>
+  )
+}
+
+/** A library episode: downloaded, downloading, or only streamed. */
+function EpisodeRow({
+  e,
+  t,
+  options,
+  run
+}: {
+  e: EpisodeInfo
+  t: TorrentStatusInfo | undefined
+  options: ReturnType<typeof flattenFolders>
+  run: (fn: () => Promise<unknown>) => void
+}): JSX.Element {
+  const [confirm, setConfirm] = useState(false)
+  const progress = t?.files[e.fileIndex]?.progress ?? 0
+  const label = e.episodeNum != null ? `Ep ${e.episodeNum}` : 'This episode'
+  return (
+    <li
+      className={`episode ${e.watched ? 'watched' : ''}`}
+      draggable
+      onDragStart={(ev) => startDrag(ev, { type: 'episode', id: e.id })}
+    >
+      <button className="play-file" title="Play" onClick={() => run(() => window.api.play(e.torrentId, e.fileIndex))}>
+        ▶
+      </button>
+      <span className="ep-num">{e.episodeNum != null ? `Ep ${e.episodeNum}` : '—'}</span>
+      <span className="ep-title" title={e.title}>
+        {e.title}
+      </span>
+      {confirm ? (
+        <span className="ep-state confirm">
+          {e.downloaded ? (
+            <>
+              <span className="muted">
+                Delete the {progress < 1 ? 'partly ' : ''}downloaded file? {label} stays in the library to stream.
+              </span>
+              <button className="danger" onClick={() => run(() => window.api.deleteEpisode(e.id, false))}>
+                Delete file
+              </button>
+              <button onClick={() => run(() => window.api.deleteEpisode(e.id, true))}>Remove from library</button>
+            </>
+          ) : (
+            <>
+              <span className="muted">Remove {label} from the library?</span>
+              <button className="danger" onClick={() => run(() => window.api.deleteEpisode(e.id, true))}>
+                Remove
+              </button>
+            </>
+          )}
+          <button onClick={() => setConfirm(false)}>Cancel</button>
+        </span>
+      ) : (
+        <span className="ep-state">
+          {e.downloaded && progress < 1 && (
+            <span className="ep-download" title={t ? `Torrent ${t.status}` : undefined}>
+              {t?.status === 'paused' ? 'Paused' : 'Downloading'} {(progress * 100).toFixed(0)}%
+            </span>
+          )}
+          {e.watched ? (
+            <span className="watched-badge">Watched</span>
+          ) : e.positionSec > RESUME_MIN_SEC ? (
+            <span className="resume-at">
+              {formatClock(e.positionSec)}
+              {e.durationSec ? ` / ${formatClock(e.durationSec)}` : ''}
+            </span>
+          ) : null}
+          <span className="muted">{formatBytes(e.sizeBytes)}</span>
+          {e.downloaded ? (
+            progress >= 1 && <span className="downloaded-badge">Downloaded</span>
+          ) : (
+            <button className="link" onClick={() => run(() => window.api.downloadEpisode(e.id))}>
+              Download
+            </button>
+          )}
+          <button className="link" onClick={() => run(() => window.api.setWatched(e.torrentId, e.fileIndex, !e.watched))}>
+            {e.watched ? 'Mark unwatched' : 'Mark watched'}
+          </button>
+          <select
+            className="move-to"
+            value=""
+            title="Move to folder"
+            onChange={(ev) => {
+              const v = ev.target.value
+              run(() => window.api.moveEpisodes([e.id], v === 'unsorted' ? null : Number(v)))
+            }}
+          >
+            <option value="" disabled>
+              Move to…
+            </option>
+            {options
+              .filter(({ folder }) => folder.id !== e.folderId)
+              .map(({ folder, depth }) => (
+                <option key={folder.id} value={folder.id}>
+                  {' '.repeat(depth)}
+                  {folder.name}
+                </option>
+              ))}
+            {e.folderId !== null && <option value="unsorted">Unsorted</option>}
+          </select>
+          <button className="link" onClick={() => setConfirm(true)}>
+            {e.downloaded ? 'Delete' : 'Remove'}
+          </button>
+        </span>
+      )}
+    </li>
+  )
+}
+
+/** A followed series' episode on nyaa that hasn't been played or downloaded yet. */
+function ReleaseRow({ a, run }: { a: AvailableEpisode; run: (fn: () => Promise<unknown>) => void }): JSX.Element {
+  const [confirm, setConfirm] = useState(false)
+  return (
+    <li className="episode">
+      <button className="play-file" title="Play" onClick={() => run(() => window.api.streamRelease(a.id))}>
+        ▶
+      </button>
+      <span className="ep-num">Ep {a.episodeNum}</span>
+      <span className="ep-title" title={a.title}>
+        {a.title}
+      </span>
+      {confirm ? (
+        <span className="ep-state confirm">
+          <span className="muted">Remove Ep {a.episodeNum} from the library?</span>
+          <button className="danger" onClick={() => run(() => window.api.dismissRelease(a.id))}>
+            Remove
+          </button>
+          <button onClick={() => setConfirm(false)}>Cancel</button>
+        </span>
+      ) : (
+        <span className="ep-state">
+          <span className="muted">New · {formatAge(new Date(a.publishedAt).toISOString())}</span>
+          <span className="muted">{formatBytes(a.sizeBytes)}</span>
+          <button className="link" onClick={() => run(() => window.api.downloadRelease(a.id))}>
+            Download
+          </button>
+          <button className="link" onClick={() => setConfirm(true)}>
+            Remove
+          </button>
+        </span>
+      )}
+    </li>
   )
 }
 

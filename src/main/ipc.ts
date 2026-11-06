@@ -3,18 +3,32 @@ import type { AddTorrentRequest, NyaaResult, NyaaSearchParams, PlayerCommand, Se
 import { getRecentSearches, getSettings, recordSearch, setSettings } from './db'
 import { getTorrentInfo, searchNyaa } from './nyaa'
 import {
+  addStream,
   addTorrent,
   applyLimits,
   listTorrents,
   pauseTorrent,
-  removeTorrent,
+  removeDownload,
   resumeTorrent,
   showTorrentInFolder
 } from './torrent'
-import { findMpv, getPlayerState, hasNvidiaGpu, play, playerCommand, setVideoBounds, setWatched } from './player'
+import {
+  closeIfPlaying,
+  findMpv,
+  getPlayerState,
+  hasNvidiaGpu,
+  play,
+  playerCommand,
+  setVideoBounds,
+  setWatched
+} from './player'
 import {
   createFolder,
+  deleteEpisode,
   deleteFolder,
+  dismissRelease,
+  downloadEpisode,
+  episodeSource,
   getLibrary,
   linkFolder,
   moveEpisodes,
@@ -49,9 +63,10 @@ export function registerIpc(): void {
   ipcMain.handle('torrents:list', () => listTorrents())
   ipcMain.handle('torrents:pause', (_e, id: number) => pauseTorrent(id))
   ipcMain.handle('torrents:resume', (_e, id: number) => resumeTorrent(id))
-  ipcMain.handle('torrents:remove', (_e, id: number, deleteFiles: boolean) =>
-    removeTorrent(id, deleteFiles === true)
-  )
+  ipcMain.handle('torrents:remove', (_e, id: number, deleteFiles: boolean) => {
+    if (deleteFiles === true) closeIfPlaying(id)
+    return removeDownload(id, deleteFiles === true)
+  })
   ipcMain.handle('torrents:showInFolder', (_e, id: number) => showTorrentInFolder(id))
 
   ipcMain.handle('player:play', (_e, torrentId: number, fileIndex: number) => play(torrentId, fileIndex))
@@ -59,7 +74,7 @@ export function registerIpc(): void {
   ipcMain.handle('player:getState', () => getPlayerState())
   ipcMain.on('player:bounds', (_e, rect: VideoRect | null) => setVideoBounds(rect))
   ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
-    const { id } = await addTorrent(req, await resolveFolder(req.folder))
+    const { id } = await addStream(req, await resolveFolder(req.folder))
     await play(id, fileIndex)
   })
 
@@ -71,6 +86,13 @@ export function registerIpc(): void {
   )
   ipcMain.handle('library:moveFolder', (_e, id: number, parentId: number | null) => moveFolder(id, parentId))
   ipcMain.handle('library:moveEpisodes', (_e, ids: number[], folderId: number | null) => moveEpisodes(ids, folderId))
+  ipcMain.handle('library:downloadEpisode', (_e, id: number) => downloadEpisode(id))
+  ipcMain.handle('library:deleteEpisode', (_e, id: number, remove: boolean) => {
+    // mpv has to let go of the file before it can be deleted.
+    closeIfPlaying(episodeSource(id).torrentId)
+    return deleteEpisode(id, remove === true)
+  })
+  ipcMain.handle('releases:dismiss', (_e, id: number) => dismissRelease(id))
   ipcMain.handle('library:suggestFolder', (_e, series: string) => suggestFolder(series))
   ipcMain.handle('library:linkFolder', (_e, folderId: number, anilistId: number | null) => linkFolder(folderId, anilistId))
   ipcMain.handle('follows:follow', (_e, release: NyaaResult, folder: AddTorrentRequest['folder']) =>
