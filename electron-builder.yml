@@ -1,0 +1,36 @@
+# Must match APP_ID in src/main/index.ts.
+appId: com.weicongx.swarmplay
+productName: Swarmplay
+copyright: Copyright © 2026 weicongx
+
+directories:
+  buildResources: resources
+  output: dist
+
+files:
+  - out/**
+  - resources/**
+  - package.json
+# Icons are read from disk by Windows (tray, notifications), so keep them outside the asar.
+asarUnpack:
+  - resources/**
+
+# Dependencies are plain JS or prebuilt; nothing needs compiling for Electron.
+npmRebuild: false
+
+win:
+  target: nsis
+  icon: resources/icon.ico
+  executableName: Swarmplay
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Swarmplay
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  uninstallDisplayName: Swarmplay
+  artifactName: Swarmplay-Setup-${version}.${ext}

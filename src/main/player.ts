@@ -2,14 +2,20 @@ import { spawn, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { connect, type Socket } from 'net'
 import { join } from 'path'
-import { RESUME_MIN_SEC } from '@shared/types'
+import { BrowserWindow } from 'electron'
+import { RESUME_MIN_SEC, type PlayerCommand, type PlayerState, type PlayerTrack, type VideoRect } from '@shared/types'
 import { getDb, getSettings } from './db'
-import { nextEpisode } from './library'
+import { describeEpisode, nextEpisode } from './library'
 import { preparePlayback, type PlaybackTarget } from './torrent'
 
-// One mpv instance is reused for every episode and driven over its JSON IPC pipe.
+// One mpv instance is reused for every episode, driven over its JSON IPC pipe.
+// It renders into a frameless child window ("host") kept on top of the video
+// area of the page, so playback looks built into the app while mpv still
+// handles every codec and subtitle format. The host ignores the mouse, so
+// clicks and keys go to the page underneath, which sends commands here.
 const PIPE = `\\\\.\\pipe\\swarmplay-mpv-${process.pid}`
 const SAVE_EVERY_MS = 5_000
+const BROADCAST_EVERY_MS = 250
 /** Past this fraction of the runtime an episode counts as watched. */
 const WATCHED_AT = 0.9
 
@@ -26,6 +32,52 @@ interface NowPlaying {
 let proc: ChildProcess | null = null
 let sock: Socket | null = null
 let current: NowPlaying | null = null
+let mainWin: BrowserWindow | null = null
+let host: BrowserWindow | null = null
+let videoRect: VideoRect | null = null
+
+const state: PlayerState = blankState()
+let broadcastTimer: NodeJS.Timeout | null = null
+
+function blankState(): PlayerState {
+  return {
+    open: false,
+    torrentId: null,
+    fileIndex: null,
+    title: '',
+    series: null,
+    episodeLabel: null,
+    timePos: 0,
+    duration: null,
+    paused: false,
+    buffering: false,
+    volume: 100,
+    muted: false,
+    audioTracks: [],
+    subTracks: [],
+    hasNext: false,
+    fullscreen: false,
+    error: null
+  }
+}
+
+/** Call once the main window exists; the video host is attached to it. */
+export function attachPlayerWindow(win: BrowserWindow): void {
+  mainWin = win
+  const reposition = (): void => placeHost()
+  for (const ev of ['move', 'resize', 'maximize', 'unmaximize', 'restore', 'enter-full-screen', 'leave-full-screen'] as const) {
+    win.on(ev as 'move', reposition)
+  }
+  win.on('enter-full-screen', () => setState({ fullscreen: true }))
+  win.on('leave-full-screen', () => setState({ fullscreen: false }))
+  // Hidden to the tray: stop rather than keep playing invisibly.
+  win.on('hide', () => state.open && closePlayer())
+  win.on('closed', () => {
+    host?.destroy()
+    host = null
+    mainWin = null
+  })
+}
 
 export function findMpv(): string | null {
   const { mpvPath } = getSettings()
@@ -57,10 +109,64 @@ export async function play(torrentId: number, fileIndex: number): Promise<void> 
   await ensureMpv(mpv)
   current = { torrentId, fileIndex, loaded: false, pos: start, duration: null, lastSaved: Date.now() }
 
+  const ep = describeEpisode(torrentId, fileIndex)
+  setState({
+    ...blankState(),
+    open: true,
+    torrentId,
+    fileIndex,
+    title: target.title,
+    series: ep.folderName,
+    episodeLabel: ep.label,
+    timePos: start,
+    buffering: true,
+    volume: state.volume,
+    muted: state.muted,
+    fullscreen: mainWin?.isFullScreen() ?? false,
+    hasNext: nextEpisode(torrentId, fileIndex) != null
+  })
+  mainWin?.show()
+
   // `start` is a global option, so set it before every load.
   command('set_property', 'start', start > 0 ? String(start) : 'none')
   command('set_property', 'force-media-title', target.title)
+  command('set_property', 'pause', false)
   command('loadfile', target.source, 'replace')
+}
+
+export function playerCommand(cmd: PlayerCommand): void {
+  switch (cmd.type) {
+    case 'toggle-pause':
+      return command('cycle', 'pause')
+    case 'seek':
+      return command('seek', Math.max(0, cmd.seconds), 'absolute')
+    case 'seek-by':
+      return command('seek', cmd.seconds, 'relative')
+    case 'volume':
+      return command('set_property', 'volume', Math.min(130, Math.max(0, cmd.value)))
+    case 'toggle-mute':
+      return command('cycle', 'mute')
+    case 'audio':
+      return command('set_property', 'aid', cmd.id)
+    case 'sub':
+      return command('set_property', 'sid', cmd.id ?? 'no')
+    case 'next':
+      return playNext(false)
+    case 'close':
+      return closePlayer()
+    case 'fullscreen':
+      return mainWin?.setFullScreen(cmd.on ?? !mainWin.isFullScreen())
+  }
+}
+
+export function getPlayerState(): PlayerState {
+  return state
+}
+
+/** The page reports where the video goes; null when the player isn't on screen. */
+export function setVideoBounds(rect: VideoRect | null): void {
+  videoRect = rect
+  placeHost()
 }
 
 export function setWatched(torrentId: number, fileIndex: number, watched: boolean): void {
@@ -79,6 +185,91 @@ export function stopPlayer(): void {
 }
 
 // ---------------------------------------------------------------------------
+
+function closePlayer(): void {
+  saveCurrent()
+  current = null
+  command('stop')
+  if (mainWin?.isFullScreen()) mainWin.setFullScreen(false)
+  setState({ ...blankState(), volume: state.volume, muted: state.muted })
+  placeHost()
+}
+
+function playNext(onlyIfFinished: boolean): void {
+  const ended = current
+  if (!ended) return
+  const finished = ended.duration != null && ended.pos >= ended.duration * WATCHED_AT
+  const next =
+    (!onlyIfFinished || (finished && getSettings().autoplayNext)) && nextEpisode(ended.torrentId, ended.fileIndex)
+  if (!next) {
+    if (onlyIfFinished) closePlayer()
+    return
+  }
+  play(next.torrentId, next.fileIndex).catch((err) => setState({ error: `Couldn't play the next episode: ${err.message}` }))
+}
+
+function setState(patch: Partial<PlayerState>, immediate = true): void {
+  Object.assign(state, patch)
+  if (immediate) {
+    if (broadcastTimer) clearTimeout(broadcastTimer)
+    broadcastTimer = null
+    broadcast()
+  } else if (!broadcastTimer) {
+    broadcastTimer = setTimeout(() => {
+      broadcastTimer = null
+      broadcast()
+    }, BROADCAST_EVERY_MS)
+  }
+}
+
+function broadcast(): void {
+  mainWin?.webContents.send('player:state', state)
+}
+
+function ensureHost(): BrowserWindow | null {
+  if (host && !host.isDestroyed()) return host
+  if (!mainWin) return null
+  host = new BrowserWindow({
+    parent: mainWin,
+    frame: false,
+    show: false,
+    skipTaskbar: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    focusable: false,
+    hasShadow: false,
+    thickFrame: false,
+    roundedCorners: false,
+    backgroundColor: '#000000'
+  })
+  // Mouse input would otherwise land on the host's empty page, never reaching mpv
+  // or the app; let it fall through to the player page underneath.
+  host.setIgnoreMouseEvents(true)
+  host.on('closed', () => (host = null))
+  return host
+}
+
+/** Keep the video window exactly over the page's video area. */
+function placeHost(): void {
+  const h = host && !host.isDestroyed() ? host : null
+  if (!h) return
+  if (!mainWin || !state.open || !videoRect || !mainWin.isVisible() || mainWin.isMinimized()) {
+    if (h.isVisible()) h.hide()
+    return
+  }
+  const cb = mainWin.getContentBounds()
+  const zoom = mainWin.webContents.getZoomFactor()
+  h.setBounds({
+    x: Math.round(cb.x + videoRect.x * zoom),
+    y: Math.round(cb.y + videoRect.y * zoom),
+    width: Math.max(1, Math.round(videoRect.width * zoom)),
+    height: Math.max(1, Math.round(videoRect.height * zoom))
+  })
+  if (!h.isVisible()) h.showInactive()
+}
 
 /** Create or update the episode row and return where playback should start. */
 function rememberEpisode(torrentId: number, fileIndex: number, target: PlaybackTarget): number {
@@ -116,18 +307,28 @@ function saveCurrent(): void {
 }
 
 async function ensureMpv(mpvPath: string): Promise<void> {
-  if (proc && sock && !sock.destroyed) return
+  if (proc && sock && !sock.destroyed && host && !host.isDestroyed()) return
+  proc?.kill()
+
+  const h = ensureHost()
+  if (!h) throw new Error('The app window is not ready')
+  const hwnd = h.getNativeWindowHandle().readBigUInt64LE(0).toString()
 
   const child = spawn(
     mpvPath,
     [
+      `--wid=${hwnd}`,
       `--input-ipc-server=${PIPE}`,
-      '--idle=yes', // stay open between episodes so autoplay reuses the window
-      '--force-window=yes', // show the window while the stream buffers
+      '--osc=no', // the app draws the controls
+      '--input-default-bindings=no', // and handles all input
+      '--input-vo-keyboard=no',
+      '--idle=yes', // stay open between episodes so autoplay reuses it
+      '--force-window=yes', // keep a black frame up while the stream buffers
       '--keep-open=no',
+      '--hwdec=auto-safe',
       '--network-timeout=120' // torrents can take a while to find the first pieces
     ],
-    { stdio: 'ignore', windowsHide: false }
+    { stdio: 'ignore' }
   )
   proc = child
   child.on('exit', () => {
@@ -137,6 +338,8 @@ async function ensureMpv(mpvPath: string): Promise<void> {
     sock?.destroy()
     sock = null
     current = null
+    if (state.open) setState({ ...blankState(), error: null })
+    placeHost()
   })
 
   sock = await connectWithRetry()
@@ -152,8 +355,8 @@ async function ensureMpv(mpvPath: string): Promise<void> {
   })
   sock.on('error', () => {})
 
-  command('observe_property', 1, 'time-pos')
-  command('observe_property', 2, 'duration')
+  const observed = ['time-pos', 'duration', 'pause', 'volume', 'mute', 'track-list', 'paused-for-cache']
+  observed.forEach((name, i) => command('observe_property', i + 1, name))
 }
 
 async function connectWithRetry(): Promise<Socket> {
@@ -181,6 +384,16 @@ interface MpvMessage {
   name?: string
   data?: unknown
   reason?: string
+  file_error?: string
+}
+
+interface MpvTrack {
+  id: number
+  type: 'video' | 'audio' | 'sub'
+  title?: string
+  lang?: string
+  codec?: string
+  selected?: boolean
 }
 
 function onMessage(msg: MpvMessage): void {
@@ -188,33 +401,57 @@ function onMessage(msg: MpvMessage): void {
 
   if (msg.event === 'file-loaded') {
     current.loaded = true
+    setState({ buffering: false, error: null })
   } else if (msg.event === 'property-change') {
-    // duration can be reported just before file-loaded, and only changes once per file.
-    if (msg.name === 'duration' && typeof msg.data === 'number') {
-      current.duration = msg.data
-    } else if (msg.name === 'time-pos' && typeof msg.data === 'number' && current.loaded) {
-      current.pos = msg.data
-      if (Date.now() - current.lastSaved > SAVE_EVERY_MS) saveCurrent()
+    switch (msg.name) {
+      // duration can be reported just before file-loaded, and only changes once per file.
+      case 'duration':
+        if (typeof msg.data === 'number') {
+          current.duration = msg.data
+          setState({ duration: msg.data })
+        }
+        break
+      case 'time-pos':
+        if (typeof msg.data === 'number' && current.loaded) {
+          current.pos = msg.data
+          setState({ timePos: msg.data }, false)
+          if (Date.now() - current.lastSaved > SAVE_EVERY_MS) saveCurrent()
+        }
+        break
+      case 'pause':
+        setState({ paused: msg.data === true })
+        break
+      case 'paused-for-cache':
+        setState({ buffering: msg.data === true })
+        break
+      case 'volume':
+        if (typeof msg.data === 'number') setState({ volume: msg.data })
+        break
+      case 'mute':
+        setState({ muted: msg.data === true })
+        break
+      case 'track-list': {
+        const tracks = (Array.isArray(msg.data) ? msg.data : []) as MpvTrack[]
+        const toTrack = (t: MpvTrack): PlayerTrack => ({
+          id: t.id,
+          title: t.title ?? null,
+          lang: t.lang ?? null,
+          codec: t.codec ?? null,
+          selected: t.selected === true
+        })
+        setState({
+          audioTracks: tracks.filter((t) => t.type === 'audio').map(toTrack),
+          subTracks: tracks.filter((t) => t.type === 'sub').map(toTrack)
+        })
+        break
+      }
     }
-  } else if (msg.event === 'end-file' && msg.reason === 'eof' && current.loaded) {
-    onEpisodeEnd(current)
-  }
-}
-
-function onEpisodeEnd(ended: NowPlaying): void {
-  saveCurrent()
-  current = null
-
-  // A stream that drops out early also reports eof, so only move on if it really finished.
-  const finished = ended.duration != null && ended.pos >= ended.duration * WATCHED_AT
-  const next = finished && getSettings().autoplayNext ? nextEpisode(ended.torrentId, ended.fileIndex) : null
-
-  if (next) {
-    play(next.torrentId, next.fileIndex).catch((err) => {
-      console.error('Autoplay failed:', err)
-      command('quit')
-    })
-  } else {
-    command('quit')
+  } else if (msg.event === 'end-file') {
+    if (msg.reason === 'eof' && current.loaded) {
+      saveCurrent()
+      playNext(true)
+    } else if (msg.reason === 'error') {
+      setState({ buffering: false, error: `Couldn't play this file${msg.file_error ? `: ${msg.file_error}` : ''}` })
+    }
   }
 }

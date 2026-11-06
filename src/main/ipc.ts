@@ -1,5 +1,5 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import type { AddTorrentRequest, NyaaSearchParams, Settings } from '@shared/types'
+import type { AddTorrentRequest, NyaaSearchParams, PlayerCommand, Settings, VideoRect } from '@shared/types'
 import { getRecentSearches, getSettings, recordSearch, setSettings } from './db'
 import { getTorrentInfo, searchNyaa } from './nyaa'
 import {
@@ -11,7 +11,7 @@ import {
   resumeTorrent,
   showTorrentInFolder
 } from './torrent'
-import { findMpv, play, setWatched } from './player'
+import { findMpv, getPlayerState, play, playerCommand, setVideoBounds, setWatched } from './player'
 import {
   createFolder,
   deleteFolder,
@@ -54,6 +54,9 @@ export function registerIpc(): void {
   ipcMain.handle('torrents:showInFolder', (_e, id: number) => showTorrentInFolder(id))
 
   ipcMain.handle('player:play', (_e, torrentId: number, fileIndex: number) => play(torrentId, fileIndex))
+  ipcMain.handle('player:command', (_e, cmd: PlayerCommand) => playerCommand(cmd))
+  ipcMain.handle('player:getState', () => getPlayerState())
+  ipcMain.on('player:bounds', (_e, rect: VideoRect | null) => setVideoBounds(rect))
   ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
     const { id } = await addTorrent(req, await resolveFolder(req.folder))
     await play(id, fileIndex)

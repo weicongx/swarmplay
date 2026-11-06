@@ -19,6 +19,14 @@ npm run dev
 
 `npm run typecheck` and `npm run build` check and bundle without launching.
 
+### Installer
+
+```bash
+npm run dist
+```
+
+builds `dist/Swarmplay-Setup-<version>.exe` (NSIS, per-user install with Start-menu and desktop shortcuts). It isn't code-signed, so Windows SmartScreen warns on first run ("More info" → "Run anyway"). On first launch Windows Firewall asks whether Swarmplay may accept connections; allowing it lets other peers connect to you, which helps torrents download and seed. mpv still needs to be installed separately.
+
 ## Layout
 
 - `src/main/` – Electron main process: nyaa RSS client (`nyaa.ts`), `.torrent` parsing (`bencode.ts`, `torrentFile.ts`), torrent engine and local stream server (`torrent.ts`), mpv control and resume positions (`player.ts`), library folders (`library.ts`), release-name parsing (`release.ts`), AniList lookup (`anilist.ts`), tray icon (`tray.ts`), SQLite via Electron's built-in `node:sqlite` (`db.ts`), IPC handlers (`ipc.ts`)
@@ -38,6 +46,7 @@ The database lives at `%APPDATA%/Swarmplay/swarmplay.db`.
 | 3 mpv playback, resume position, autoplay next | done |
 | 4 Library folders, auto-filing | done |
 | 5 AniList covers and title matching, Continue watching, tray, notifications | done |
+| In-app player, Windows installer | done |
 
 ## Notes
 
@@ -45,7 +54,9 @@ The database lives at `%APPDATA%/Swarmplay/swarmplay.db`.
 - webtorrent 3 uses top-level await, so the CJS main bundle loads it with `import()`.
 - Active torrents are streamable at `http://127.0.0.1:<random port>/webtorrent/<infoHash>/<path>` with range support. The server only answers requests without a browser Origin, so web pages can't read it.
 - Pause fully removes the torrent from the client (WebTorrent's own pause only stops new connections); resume re-adds it and re-verifies pieces on disk.
-- One mpv process is reused for every episode (`--idle`), controlled over a named pipe. Complete files play from disk; anything else streams from the local server. Positions save every 5 s; an episode counts as watched at 90%, and the next selected video in the torrent autoplays.
+- Playback is in the app window: one mpv process (`--idle`, controlled over a named pipe) renders via `--wid` into a frameless child window that the main process keeps over the player page's video box, and the page draws the controls. The child window ignores the mouse so clicks reach the page. Chromium's DirectComposition is disabled because it layers the page over child windows, hiding the video. Complete files play from disk; anything else streams from the local server. Positions save every 5 s; an episode counts as watched at 90%.
+- Player keys: Space/K pause, ←/→ 5 s (Shift: 30 s), ↑/↓ volume, M mute, F or double-click fullscreen, N next episode, Esc exit fullscreen / close.
+- The taskbar shows the running exe's icon, so it's only Swarmplay's in the packaged app; from source it's Electron's. Windows caches that icon per app id, which is why source runs use a separate `.dev` id.
 - Release names are parsed with [anitomy](https://www.npmjs.com/package/anitomy) (a TS port; `anitomyscript`'s old Emscripten build breaks under modern Node). The season is normalized into the folder name ("S2", "2nd Season" and "- S02" all become "Show S2"), and folders match case- and punctuation-insensitively.
 - New downloads save to `<library>/<folder>/` on disk. Moving episodes between folders later only changes the library, not files on disk, because one batch torrent can feed several folders.
 - Every selected video in a torrent gets an episode row; torrents added before folders existed show up in Unsorted. Autoplay follows the folder's episode order, so weekly single-episode torrents chain.

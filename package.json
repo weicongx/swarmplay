@@ -3,13 +3,15 @@
   "productName": "Swarmplay",
   "version": "0.1.0",
   "description": "Search nyaa.si, download torrents, watch and organize anime",
+  "author": "weicongx",
   "main": "./out/main/index.js",
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "dist": "electron-vite build && electron-builder --win"
   },
   "dependencies": {
     "anitomy": "^0.0.35",
@@ -22,6 +24,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

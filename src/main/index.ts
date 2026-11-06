@@ -1,11 +1,20 @@
 import { app, BrowserWindow, Notification, shell } from 'electron'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
+import iconIco from '../../resources/icon.ico?asset'
+
+// Must match appId in electron-builder.yml. Windows caches a taskbar icon per id,
+// so runs from source (electron.exe, with Electron's icon) use their own id.
+const APP_ID = app.isPackaged ? 'com.weicongx.swarmplay' : 'com.weicongx.swarmplay.dev'
 import { firstTime, getDb, getSettings } from './db'
 import { registerIpc } from './ipc'
 import { autoLinkAll, describeEpisode } from './library'
 import { initTorrents, onFileComplete, shutdownTorrents } from './torrent'
-import { stopPlayer } from './player'
+import { attachPlayerWindow, stopPlayer } from './player'
+
+// The in-app player is mpv drawing into a child window. Chromium's DirectComposition
+// layers the page above child windows, which hides the video (audio still plays).
+app.commandLine.appendSwitch('disable-direct-composition')
 import { createTray } from './tray'
 
 let win: BrowserWindow | null = null
@@ -21,7 +30,7 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: '#0f1115',
     autoHideMenuBar: true,
-    icon,
+    icon: process.platform === 'win32' ? iconIco : icon,
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -30,6 +39,7 @@ function createWindow(): void {
     }
   })
 
+  attachPlayerWindow(win)
   win.once('ready-to-show', () => win?.show())
 
   // Closing hides to the tray so downloads and seeding keep going.
@@ -80,8 +90,11 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', showWindow)
-  // Windows groups notifications and taskbar entries by this id.
-  app.setAppUserModelId('com.swarmplay.app')
+  // Windows groups notifications and taskbar entries by this id; the installer's
+  // Start-menu shortcut carries the same id, giving toasts the app's name and icon.
+  // The taskbar button shows the running exe's icon, so only Swarmplay.exe shows
+  // ours; running from source shows electron.exe's.
+  app.setAppUserModelId(APP_ID)
 
   app.whenReady().then(() => {
     getDb()

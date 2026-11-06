@@ -815,6 +815,134 @@ select.move-to {
   color: var(--muted);
 }
 
+/* Player */
+
+.content {
+  position: relative;
+}
+.app.fullscreen .sidebar {
+  display: none;
+}
+
+.player {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.player-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.player-back {
+  flex-shrink: 0;
+}
+.player-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.player-series {
+  font-weight: 600;
+}
+.player-file {
+  margin-left: 12px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* mpv's window sits exactly over this box; clicks pass through it to here. */
+.player-video {
+  flex: 1;
+  min-height: 0;
+  background: #000;
+  cursor: pointer;
+}
+.player.idle,
+.player.idle .player-video {
+  cursor: none;
+}
+
+.player-error {
+  padding: 8px 16px;
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--red);
+  border-top: 1px solid rgba(248, 113, 113, 0.4);
+  flex-shrink: 0;
+}
+
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.player-controls .ctl {
+  min-width: 38px;
+  padding: 5px 8px;
+  background: transparent;
+  border-color: transparent;
+  font-size: 15px;
+}
+.player-controls .ctl:hover {
+  background: var(--panel-2);
+}
+.player-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  white-space: nowrap;
+  min-width: 96px;
+}
+
+.player-seek,
+.player-volume {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 3px;
+  padding: 0;
+  border: none;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.player-seek {
+  flex: 1;
+  min-width: 120px;
+  background: linear-gradient(to right, var(--accent) var(--pct, 0%), var(--panel-2) var(--pct, 0%));
+}
+.player-volume {
+  width: 90px;
+}
+.player-seek::-webkit-slider-thumb,
+.player-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+}
+.player-track {
+  max-width: 190px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 /* Settings */
 
 .settings label.inline {

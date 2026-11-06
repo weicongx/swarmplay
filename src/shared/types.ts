@@ -175,6 +175,60 @@ export interface AniListMedia {
   color: string | null
 }
 
+export interface PlayerTrack {
+  id: number
+  title: string | null
+  lang: string | null
+  codec: string | null
+  selected: boolean
+}
+
+/** What the in-app player is doing, pushed from the main process. */
+export interface PlayerState {
+  open: boolean
+  torrentId: number | null
+  fileIndex: number | null
+  /** File name */
+  title: string
+  /** Library folder, e.g. "Sousou no Frieren S2" */
+  series: string | null
+  /** "Episode 5", or the file name when unnumbered */
+  episodeLabel: string | null
+  timePos: number
+  duration: number | null
+  paused: boolean
+  /** Waiting for torrent pieces */
+  buffering: boolean
+  volume: number
+  muted: boolean
+  audioTracks: PlayerTrack[]
+  subTracks: PlayerTrack[]
+  hasNext: boolean
+  fullscreen: boolean
+  error: string | null
+}
+
+export type PlayerCommand =
+  | { type: 'toggle-pause' }
+  | { type: 'seek'; seconds: number }
+  | { type: 'seek-by'; seconds: number }
+  | { type: 'volume'; value: number }
+  | { type: 'toggle-mute' }
+  | { type: 'audio'; id: number }
+  /** id null turns subtitles off */
+  | { type: 'sub'; id: number | null }
+  | { type: 'next' }
+  | { type: 'close' }
+  | { type: 'fullscreen'; on?: boolean }
+
+/** Where the video should appear, in CSS pixels relative to the page. */
+export interface VideoRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface PlayerInfo {
   /** The mpv.exe that will be used, or null if none was found */
   mpvPath: string | null
@@ -202,8 +256,13 @@ export interface AppApi {
   removeTorrent(id: number, deleteFiles: boolean): Promise<void>
   showTorrentInFolder(id: number): Promise<void>
 
-  /** Open a file of a torrent in mpv, streaming it if it isn't fully downloaded. */
+  /** Open a file of a torrent in the in-app player, streaming it if it isn't fully downloaded. */
   play(torrentId: number, fileIndex: number): Promise<void>
+  playerCommand(cmd: PlayerCommand): Promise<void>
+  getPlayerState(): Promise<PlayerState>
+  onPlayerState(cb: (state: PlayerState) => void): () => void
+  /** Place the video over this part of the page; null hides it. */
+  setVideoBounds(rect: VideoRect | null): void
   /** Add a torrent (if needed) and immediately start streaming one of its files. */
   streamNow(req: AddTorrentRequest, fileIndex: number): Promise<void>
   setWatched(torrentId: number, fileIndex: number, watched: boolean): Promise<void>

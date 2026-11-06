@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppApi, TorrentStatusInfo } from '@shared/types'
+import type { AppApi, PlayerState, TorrentStatusInfo } from '@shared/types'
 
 const api: AppApi = {
   searchNyaa: (params) => ipcRenderer.invoke('nyaa:search', params),
@@ -18,6 +18,14 @@ const api: AppApi = {
   showTorrentInFolder: (id) => ipcRenderer.invoke('torrents:showInFolder', id),
 
   play: (torrentId, fileIndex) => ipcRenderer.invoke('player:play', torrentId, fileIndex),
+  playerCommand: (cmd) => ipcRenderer.invoke('player:command', cmd),
+  getPlayerState: () => ipcRenderer.invoke('player:getState'),
+  onPlayerState: (cb) => {
+    const listener = (_e: IpcRendererEvent, s: PlayerState): void => cb(s)
+    ipcRenderer.on('player:state', listener)
+    return () => ipcRenderer.removeListener('player:state', listener)
+  },
+  setVideoBounds: (rect) => ipcRenderer.send('player:bounds', rect),
   streamNow: (req, fileIndex) => ipcRenderer.invoke('player:streamNow', req, fileIndex),
   setWatched: (torrentId, fileIndex, watched) =>
     ipcRenderer.invoke('player:setWatched', torrentId, fileIndex, watched),

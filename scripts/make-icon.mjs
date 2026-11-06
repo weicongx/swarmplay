@@ -1,4 +1,5 @@
-// Renders the app icon to resources/icon.png (256px) and resources/tray.png (32px).
+// Renders the app icon to resources/icon.png (256px), resources/icon.ico (16–256px,
+// used for the window and taskbar on Windows) and resources/tray.png (32px).
 // No image tools needed: shapes are rasterized with 4x supersampling and written as PNG.
 //   node scripts/make-icon.mjs
 import { writeFileSync, mkdirSync } from 'node:fs'
@@ -90,6 +91,27 @@ function png(size, rgba) {
   ])
 }
 
+/** An .ico holding PNG images (supported since Windows Vista). */
+function ico(pngs) {
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(1, 2) // type: icon
+  header.writeUInt16LE(pngs.length, 4)
+  const entries = []
+  let offset = 6 + 16 * pngs.length
+  for (const { size, data } of pngs) {
+    const e = Buffer.alloc(16)
+    e[0] = size >= 256 ? 0 : size // 0 means 256
+    e[1] = size >= 256 ? 0 : size
+    e.writeUInt16LE(1, 4) // color planes
+    e.writeUInt16LE(32, 6) // bits per pixel
+    e.writeUInt32LE(data.length, 8)
+    e.writeUInt32LE(offset, 12)
+    offset += data.length
+    entries.push(e)
+  }
+  return Buffer.concat([header, ...entries, ...pngs.map((p) => p.data)])
+}
+
 function crc32(buf) {
   let c = ~0
   for (const b of buf) {
@@ -101,5 +123,6 @@ function crc32(buf) {
 
 mkdirSync('resources', { recursive: true })
 writeFileSync('resources/icon.png', render(256))
+writeFileSync('resources/icon.ico', ico([16, 24, 32, 48, 64, 128, 256].map((size) => ({ size, data: render(size) }))))
 writeFileSync('resources/tray.png', render(32))
-console.log('wrote resources/icon.png and resources/tray.png')
+console.log('wrote resources/icon.png, resources/icon.ico and resources/tray.png')
