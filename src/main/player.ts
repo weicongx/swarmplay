@@ -112,7 +112,9 @@ export function findMpv(): string | null {
     join(env.LOCALAPPDATA ?? '', 'Microsoft', 'WinGet', 'Links', 'mpv.exe'),
     join(env.USERPROFILE ?? '', 'scoop', 'shims', 'mpv.exe'),
     join(env.ProgramData ?? 'C:\\ProgramData', 'chocolatey', 'bin', 'mpv.exe'),
-    ...(env.PATH ?? '').split(';').filter(Boolean).map((dir) => join(dir, 'mpv.exe'))
+    ...(env.PATH ?? '').split(';').filter(Boolean).map((dir) => join(dir, 'mpv.exe')),
+    // The installer's own copy, used when there's no system mpv.
+    ...(app.isPackaged ? [join(process.resourcesPath, 'mpv', 'mpv.exe')] : [])
   ]
   return candidates.find((p) => existsSync(p)) ?? null
 }
@@ -120,7 +122,11 @@ export function findMpv(): string | null {
 export async function play(torrentId: number, fileIndex: number): Promise<void> {
   const mpv = findMpv()
   if (!mpv) {
-    throw new Error('mpv was not found. Install it (winget install shinchiro.mpv) or set its path in Settings.')
+    throw new Error(
+      app.isPackaged
+        ? 'mpv was not found. Reinstall Swarmplay, or set the mpv path in Settings.'
+        : 'mpv was not found. Install it (winget install shinchiro.mpv) or set its path in Settings.'
+    )
   }
 
   const target = await preparePlayback(torrentId, fileIndex)

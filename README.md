@@ -22,35 +22,35 @@ A Windows desktop app for watching anime from torrents. Search nyaa.si, pick a r
 
 ## Install
 
-1. Install [mpv](https://mpv.io). Swarmplay uses it for playback but doesn't bundle it:
-
-   ```bash
-   winget install shinchiro.mpv
-   ```
-
-2. Run `Swarmplay-Setup-<version>.exe` (build it with `npm run dist`, below). It installs for your user only, with no admin prompt, and adds Start-menu and desktop shortcuts.
+Download `Swarmplay-Setup-<version>.exe` from the [latest release](https://github.com/weicongx/swarmplay/releases/latest) and run it. That's the only step. The installer includes [mpv](https://mpv.io) for playback, installs for your user only with no admin prompt, and adds Start-menu and desktop shortcuts.
 
 The installer isn't code-signed, so SmartScreen warns the first time. Click **More info → Run anyway**.
 
 On first launch Windows Firewall asks whether Swarmplay may accept connections. Allowing it lets peers connect to you, which speeds up downloads and lets you seed.
 
-Swarmplay finds mpv in the usual places (winget, scoop, Chocolatey, `C:\Program Files`, `PATH`). If it's somewhere else, set the path in **Settings**.
+If you already have mpv installed (winget, scoop, Chocolatey, `C:\Program Files` or on `PATH`), Swarmplay uses yours. Otherwise it uses the bundled copy. To use a specific mpv.exe, set its path in **Settings**.
 
 ## Build from source
 
-You need Windows and a recent Node.js (developed on Node 24).
+You need Windows, a recent Node.js (developed on Node 24), and mpv installed locally:
+
+```bash
+winget install shinchiro.mpv
+```
 
 ```bash
 npm install
 npm run dev
 ```
 
+`npm run dist` copies the installed mpv (`C:\Program Files\MPV Player`, or the folder in `MPV_DIR`) into `vendor/mpv` and bundles it into the installer.
+
 | Command | What it does |
 |---|---|
 | `npm run dev` | Runs the app with hot reload |
 | `npm run typecheck` | Type-checks the main, preload and renderer code |
 | `npm run build` | Bundles everything into `out/` |
-| `npm run dist` | Builds the NSIS installer at `dist/Swarmplay-Setup-<version>.exe` |
+| `npm run dist` | Builds the NSIS installer, with mpv bundled, at `dist/Swarmplay-Setup-<version>.exe` |
 | `node scripts/make-icon.mjs` | Regenerates the app and tray icons in `resources/` |
 
 ## Using it
@@ -142,13 +142,13 @@ src/
   shared/          types and folder-name helpers used by both sides
   renderer/        React UI (Search, Downloads, Library, Player, Settings)
 resources/         icons and Anime4K shaders
-scripts/           icon generator
+scripts/           icon generator, mpv vendoring for the installer
+licenses/          license notice for the bundled mpv
 ```
 
 ## Notes and limitations
 
 - Windows only. The embedded player relies on mpv's `--wid` and Win32 child windows.
-- mpv isn't bundled and has to be installed separately.
 - nyaa's RSS feed only returns the newest 75 results for a search, so older releases of a long-running show may need a more specific query.
 - When running from source, the taskbar icon and the notification sender show as Electron. The installed app shows Swarmplay's name and icon. Source runs use a separate app ID (`com.weicongx.swarmplay.dev`) so that Windows' per-ID icon cache doesn't mix up the two.
 - The development and installed builds share the same database.
@@ -157,7 +157,7 @@ scripts/           icon generator
 ## Credits
 
 - [WebTorrent](https://webtorrent.io) for the torrent engine and streaming
-- [mpv](https://mpv.io) for playback
+- [mpv](https://mpv.io) for playback. The installer bundles the [shinchiro](https://github.com/shinchiro/mpv-winbuild-cmake) Windows build, under the GPL v3; see `licenses/` for the license and source links.
 - [Anime4K](https://github.com/bloc97/Anime4K) by bloc97 for the upscaling shaders (MIT license, included in `resources/shaders/anime4k/LICENSE`)
 - [anitomy](https://www.npmjs.com/package/anitomy) for release-name parsing
 - [AniList](https://anilist.co) for series metadata and cover art

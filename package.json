@@ -11,7 +11,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "dist": "electron-vite build && electron-builder --win"
+    "dist": "node scripts/vendor-mpv.mjs && electron-vite build && electron-builder --win"
   },
   "dependencies": {
     "anitomy": "^0.0.35",

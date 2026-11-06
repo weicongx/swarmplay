@@ -15,6 +15,13 @@ files:
 asarUnpack:
   - resources/**
 
+# mpv ships next to app.asar (resources/mpv), copied in by scripts/vendor-mpv.mjs.
+extraResources:
+  - from: vendor/mpv
+    to: mpv
+  - from: licenses
+    to: licenses
+
 # Dependencies are plain JS or prebuilt; nothing needs compiling for Electron.
 npmRebuild: false
 

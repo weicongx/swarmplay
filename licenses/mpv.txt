@@ -1,0 +1,15 @@
+Swarmplay bundles mpv (mpv.exe, d3dcompiler_43.dll and mpv/fonts.conf in the
+mpv folder next to the app) for playback. Swarmplay runs it as a separate
+program; it is not linked into Swarmplay.
+
+mpv is free software, distributed under the GNU General Public License. The
+Windows build bundled here (shinchiro/mpv-winbuild-cmake) includes FFmpeg and
+other components under the GPL version 3, so the bundled program as a whole is
+covered by the GPL version 3 (see GPL-3.0.txt). d3dcompiler_43.dll is a
+Microsoft redistributable shipped with that build.
+
+Source code:
+  mpv:        https://github.com/mpv-player/mpv
+  this build: https://github.com/shinchiro/mpv-winbuild-cmake
+
+Run "mpv.exe --version" to see the exact mpv, FFmpeg and libplacebo versions.
