@@ -3,6 +3,8 @@ import type { PlayerCommand, PlayerState, PlayerTrack, Upscaler } from '@shared/
 import { errorMessage, formatClock, formatSpeed, UPSCALERS } from '../format'
 
 const HIDE_CONTROLS_MS = 3000
+/** How long the seek bar keeps showing a seek's target while playback gets there. */
+const SEEK_HOLD_MS = 8000
 
 /**
  * Episodes already switched to another upload automatically, so a slow replacement
@@ -27,6 +29,8 @@ export default function PlayerView({
   const videoRef = useRef<HTMLDivElement>(null)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [seekPreview, setSeekPreview] = useState<number | null>(null)
+  const [seekTarget, setSeekTarget] = useState<{ to: number; at: number } | null>(null)
+  const seekDirty = useRef(false)
   const [idle, setIdle] = useState(false)
   const [nvidia, setNvidia] = useState(false)
   const send = (cmd: PlayerCommand): void => void window.api.playerCommand(cmd)
@@ -109,8 +113,30 @@ export default function PlayerView({
     return () => window.removeEventListener('keydown', onKey)
   }, [state.volume, state.fullscreen, state.hasNext, state.skip, state.upscaler, nvidia, onMinimize])
 
+  // A seek goes where the slider is when it's let go: its own value, not the
+  // preview state, which can still hold the previous click's spot at that moment.
+  const commitSeek = (el: HTMLInputElement): void => {
+    if (!seekDirty.current) return
+    seekDirty.current = false
+    const to = Number(el.value)
+    send({ type: 'seek', seconds: to })
+    setSeekTarget({ to, at: Date.now() })
+    setSeekPreview(null)
+  }
+
+  // Until playback reaches the new spot (a stream may still be fetching it), keep
+  // showing where it's going rather than snapping back to the old position.
+  useEffect(() => {
+    if (seekTarget && Math.abs(state.timePos - seekTarget.to) < 3) setSeekTarget(null)
+  }, [state.timePos, seekTarget])
+  useEffect(() => {
+    if (!seekTarget) return
+    const t = setTimeout(() => setSeekTarget(null), SEEK_HOLD_MS)
+    return () => clearTimeout(t)
+  }, [seekTarget])
+
   const duration = state.duration ?? 0
-  const shownPos = seekPreview ?? state.timePos
+  const shownPos = seekPreview ?? seekTarget?.to ?? state.timePos
   const hideBars = state.fullscreen && idle
   const played = duration ? (Math.min(shownPos, duration) / duration) * 100 : 0
 
@@ -167,15 +193,12 @@ export default function PlayerView({
             step={0.5}
             value={Math.min(shownPos, duration || 1)}
             disabled={!duration}
-            onChange={(e) => setSeekPreview(Number(e.target.value))}
-            onPointerUp={() => {
-              if (seekPreview != null) send({ type: 'seek', seconds: seekPreview })
-              setSeekPreview(null)
+            onChange={(e) => {
+              seekDirty.current = true
+              setSeekPreview(Number(e.target.value))
             }}
-            onKeyUp={() => {
-              if (seekPreview != null) send({ type: 'seek', seconds: seekPreview })
-              setSeekPreview(null)
-            }}
+            onPointerUp={(e) => commitSeek(e.currentTarget)}
+            onKeyUp={(e) => commitSeek(e.currentTarget)}
             style={{ ['--pct' as string]: `${played}%`, ['--fetched' as string]: fetchedGradient(state.fetched) }}
             title={state.local ? undefined : 'The lighter parts are already fetched and play without waiting'}
           />
