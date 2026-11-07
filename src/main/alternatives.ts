@@ -38,7 +38,9 @@ export async function tryAnotherRelease(): Promise<string> {
   const { nyaaBaseUrl, defaultCategory } = getSettings()
   const found = new Map<string, NyaaResult>()
   for (const query of queries.slice(0, MAX_QUERIES)) {
-    const results = await searchNyaa(nyaaBaseUrl, { query, category: defaultCategory, filter: 0 }).catch(() => [])
+    const results = await searchNyaa(nyaaBaseUrl, { query, category: defaultCategory, filter: 0, sort: 'seeders' })
+      .then((p) => p.results)
+      .catch(() => [])
     for (const r of results) {
       if (r.infoHash === current.infoHash || r.seeders === 0 || found.has(r.infoHash)) continue
       const p = parseRelease(r.title)

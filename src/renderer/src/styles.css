@@ -311,6 +311,11 @@ h1 {
 .leechers {
   color: var(--red);
 }
+.load-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0 6px;
+}
 .seeders.few {
   color: var(--amber);
 }

@@ -14,10 +14,26 @@ export const NYAA_FILTERS = [
   { id: 2, label: 'Trusted only' }
 ] as const
 
+export type NyaaSort = 'date' | 'seeders' | 'downloads' | 'size'
+
 export interface NyaaSearchParams {
   query: string
   category: string
   filter: number
+  /** Highest first; default 'date' */
+  sort?: NyaaSort
+  /** 1-based, 75 results a page; default 1 */
+  page?: number
+}
+
+export interface NyaaSearchPage {
+  results: NyaaResult[]
+  page: number
+  /** Matches in all, as nyaa counts them (it stops counting at 1000) */
+  total: number
+  hasMore: boolean
+  /** nyaa's search page couldn't be read, so these are RSS's newest 75, unsorted and without more pages */
+  limited: boolean
 }
 
 export interface NyaaResult {
@@ -320,7 +336,7 @@ export const RESUME_MIN_SEC = 10
 
 /** The API the preload script exposes on `window.api`. */
 export interface AppApi {
-  searchNyaa(params: NyaaSearchParams): Promise<NyaaResult[]>
+  searchNyaa(params: NyaaSearchParams): Promise<NyaaSearchPage>
   getTorrentInfo(torrentUrl: string): Promise<TorrentInfo>
   getRecentSearches(): Promise<string[]>
   getSettings(): Promise<Settings>

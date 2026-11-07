@@ -2,7 +2,7 @@ import { seriesKey, splitSeason } from '@shared/folders'
 import type { AddTorrentRequest, FollowResult, NyaaResult } from '@shared/types'
 import { getDb, getSettings } from './db'
 import { addRelease, AVAILABLE_SQL, resolveFolder } from './library'
-import { searchNyaa } from './nyaa'
+import { searchNyaaPages } from './nyaa'
 import { play } from './player'
 import { parseRelease, type ReleaseInfo } from './release'
 import { isKept, pruneStreamTorrents } from './torrent'
@@ -10,6 +10,8 @@ import { isKept, pruneStreamTorrents } from './torrent'
 const CHECK_EVERY_MS = 30 * 60_000
 // Space out searches when checking many series, to go easy on nyaa.
 const GAP_MS = 3_000
+/** Pages a full check reads: nyaa pages through 1000 results at most, 75 a page. */
+const FIRST_CHECK_PAGES = 14
 
 interface FollowRow {
   id: number
@@ -20,6 +22,7 @@ interface FollowRow {
   query: string
   category: string
   checked_at: number | null
+  last_error: string | null
 }
 
 interface ReleaseRow {
@@ -74,8 +77,9 @@ export async function followSeries(release: NyaaResult, folder: AddTorrentReques
   return { folderId: target.id, folderName: target.name, available: countAvailable(target.id) }
 }
 
+/** A check asked for by hand reads every page, so it also finds episodes older than the newest 75. */
 export async function checkFollow(followId: number): Promise<number> {
-  return (await check(mustGetFollow(followId))).length
+  return (await check(mustGetFollow(followId), true)).length
 }
 
 /** Stop following. Its episodes that were only streamed leave the library; downloads stay. */
@@ -123,10 +127,16 @@ export function matches(f: Pick<FollowRow, 'release_group' | 'series_key' | 'res
 }
 
 /** Search nyaa for the series and store matching episodes; returns the episode numbers that are new. */
-async function check(f: FollowRow): Promise<number[]> {
+async function check(f: FollowRow, full = f.checked_at == null || f.last_error != null): Promise<number[]> {
   const db = getDb()
   try {
-    const results = await searchNyaa(getSettings().nyaaBaseUrl, { query: f.query, category: f.category, filter: 0 })
+    // A full check (the first, or after a failed one) reads every page, so a long series
+    // lists all its episodes; the scheduled ones only need the newest page.
+    const results = await searchNyaaPages(
+      getSettings().nyaaBaseUrl,
+      { query: f.query, category: f.category, filter: 0, sort: 'date' },
+      full ? FIRST_CHECK_PAGES : 1
+    )
     const fresh: number[] = []
     // Oldest first, so a later re-upload (v2) of an episode replaces the original.
     for (const res of results.sort((a, b) => Date.parse(a.pubDate) - Date.parse(b.pubDate))) {

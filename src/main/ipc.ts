@@ -46,7 +46,7 @@ import { checkFollow, downloadRelease, followSeries, streamRelease, unfollow } f
 export function registerIpc(): void {
   ipcMain.handle('nyaa:search', async (_e, params: NyaaSearchParams) => {
     const { nyaaBaseUrl } = getSettings()
-    if (params.query.trim()) recordSearch(params.query.trim())
+    if (params.query.trim() && (params.page ?? 1) === 1) recordSearch(params.query.trim())
     return searchNyaa(nyaaBaseUrl, params)
   })
 

@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
-import type { NyaaResult, NyaaSearchParams, TorrentInfo } from '@shared/types'
+import type { NyaaResult, NyaaSearchPage, NyaaSearchParams, NyaaSort, TorrentInfo } from '@shared/types'
 import { parseRelease } from './release'
 import { parseTorrentFile } from './torrentFile'
 
@@ -13,24 +13,133 @@ const parser = new XMLParser({
   htmlEntities: true
 })
 
+/** nyaa's page size, and the most results it will page through. */
+export const PAGE_SIZE = 75
+const MAX_RESULTS = 1000
+
+const SORT_PARAM: Record<NyaaSort, string> = { date: 'id', seeders: 'seeders', downloads: 'downloads', size: 'size' }
+
 /**
- * Search nyaa through its RSS feed. The feed ignores sort and page params and
- * always returns the newest ~75 matches, so sorting happens in the renderer.
+ * Search nyaa. Its search page sorts on the server and pages through up to 1000
+ * matches; if that page can't be read (a mirror, or a layout change), fall back
+ * to the RSS feed, which ignores sort and page and returns only the newest 75.
  */
-export async function searchNyaa(baseUrl: string, params: NyaaSearchParams): Promise<NyaaResult[]> {
+export async function searchNyaa(baseUrl: string, params: NyaaSearchParams): Promise<NyaaSearchPage> {
+  const page = Math.max(1, Math.floor(params.page ?? 1))
+  try {
+    const html = await fetchText(searchUrl(baseUrl, params, page))
+    const parsed = parseSearchPage(html, baseUrl)
+    if (parsed) {
+      const { results, total } = parsed
+      return { results, page, total, hasMore: page * PAGE_SIZE < Math.min(total, MAX_RESULTS), limited: false }
+    }
+    console.warn('[nyaa] search page not recognized; using RSS')
+  } catch (err) {
+    console.warn('[nyaa] search page failed; using RSS:', err instanceof Error ? err.message : err)
+  }
+  // RSS has one page only, so a later page is empty rather than a repeat.
+  const results = page === 1 ? await searchRss(baseUrl, params) : []
+  return { results, page, total: results.length, hasMore: false, limited: true }
+}
+
+/** Up to `maxPages` pages of a search, one after another, spaced out to go easy on nyaa. */
+export async function searchNyaaPages(baseUrl: string, params: NyaaSearchParams, maxPages: number): Promise<NyaaResult[]> {
+  const all: NyaaResult[] = []
+  for (let page = 1; page <= maxPages; page++) {
+    if (page > 1) await new Promise((r) => setTimeout(r, PAGE_GAP_MS))
+    const res = await searchNyaa(baseUrl, { ...params, page })
+    all.push(...res.results)
+    if (!res.hasMore) break
+  }
+  return all
+}
+
+const PAGE_GAP_MS = 1000
+
+function searchUrl(baseUrl: string, params: NyaaSearchParams, page: number): URL {
+  const url = new URL('/', baseUrl)
+  url.searchParams.set('q', params.query.trim())
+  url.searchParams.set('c', params.category)
+  url.searchParams.set('f', String(params.filter))
+  url.searchParams.set('s', SORT_PARAM[params.sort ?? 'date'])
+  url.searchParams.set('o', 'desc')
+  if (page > 1) url.searchParams.set('p', String(page))
+  return url
+}
+
+async function fetchText(url: URL): Promise<string> {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': USER_AGENT },
+    signal: AbortSignal.timeout(TIMEOUT_MS)
+  })
+  if (!res.ok) throw new Error(`nyaa returned HTTP ${res.status}`)
+  return res.text()
+}
+
+/**
+ * The results table of a search page, or null if the page doesn't look like one,
+ * so a changed layout falls back to RSS instead of showing nothing.
+ */
+export function parseSearchPage(html: string, baseUrl: string): { results: NyaaResult[]; total: number } | null {
+  if (/No results found/.test(html) && !/<tbody>/.test(html)) return { results: [], total: 0 }
+  const total = Number(html.match(/Displaying results \d+-\d+ out of (\d+) results/)?.[1] ?? NaN)
+  const rows = [...html.matchAll(/<tr class="(default|success|danger)">([\s\S]*?)<\/tr>/g)]
+  if (!Number.isFinite(total) || (rows.length === 0 && total > 0)) return null
+  const results: NyaaResult[] = []
+  for (const [, kind, row] of rows) {
+    const r = parseRow(kind, row, baseUrl)
+    if (!r) return null
+    results.push(r)
+  }
+  return { results, total }
+}
+
+function parseRow(kind: string, row: string, baseUrl: string): NyaaResult | null {
+  const view = row.match(/<a href="\/view\/(\d+)" title="([^"]*)"/)
+  const torrent = row.match(/href="(\/download\/\d+\.torrent)"/)
+  const infoHash = row.match(/urn:btih:([0-9a-f]{40})/i)?.[1]
+  const time = row.match(/data-timestamp="(\d+)"/)?.[1]
+  const size = row.match(/<td class="text-center">([\d.]+ (?:Bytes|[KMGT]iB))<\/td>/)?.[1]
+  // Seeders, leechers and completed downloads are the row's last three cells.
+  const counts = [...row.matchAll(/<td class="text-center">(\d+)<\/td>/g)].map((m) => Number(m[1])).slice(-3)
+  if (!view || !torrent || !infoHash || !time || !size || counts.length !== 3) return null
+  const category = row.match(/href="\/\?c=(\d+_\d+)" title="([^"]*)"/)
+  const base = new URL('/', baseUrl)
+  return {
+    id: Number(view[1]),
+    title: decodeHtml(view[2]),
+    torrentUrl: new URL(torrent[1], base).toString(),
+    viewUrl: new URL(`/view/${view[1]}`, base).toString(),
+    pubDate: new Date(Number(time) * 1000).toISOString(),
+    seeders: counts[0],
+    leechers: counts[1],
+    downloads: counts[2],
+    infoHash: infoHash.toLowerCase(),
+    categoryId: category?.[1] ?? '',
+    category: decodeHtml(category?.[2] ?? ''),
+    size,
+    sizeBytes: parseSize(size),
+    trusted: kind === 'success',
+    remake: kind === 'danger',
+    comments: Number(row.match(/class="comments" title="(\d+) comments?"/)?.[1] ?? 0)
+  }
+}
+
+const NAMED_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
+
+function decodeHtml(s: string): string {
+  return decodeNumericEntities(s).replace(/&(amp|lt|gt|quot|apos);/g, (_, n: string) => NAMED_ENTITIES[n])
+}
+
+/** The RSS feed: always the newest ~75 matches, whatever the sort or page. */
+async function searchRss(baseUrl: string, params: NyaaSearchParams): Promise<NyaaResult[]> {
   const url = new URL('/', baseUrl)
   url.searchParams.set('page', 'rss')
   url.searchParams.set('q', params.query.trim())
   url.searchParams.set('c', params.category)
   url.searchParams.set('f', String(params.filter))
 
-  const res = await fetch(url, {
-    headers: { 'User-Agent': USER_AGENT },
-    signal: AbortSignal.timeout(TIMEOUT_MS)
-  })
-  if (!res.ok) throw new Error(`nyaa returned HTTP ${res.status}`)
-
-  const doc = parser.parse(await res.text())
+  const doc = parser.parse(await fetchText(url))
   const raw = doc?.rss?.channel?.item
   const items: Record<string, string>[] = raw ? (Array.isArray(raw) ? raw : [raw]) : []
   return items.map(toResult)

@@ -4,7 +4,7 @@ A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a 
 
 ## Features
 
-- **Search nyaa.si** by category and filter (trusted only, no remakes) and sort by seeders, size or date. Open any result to see its file list before downloading.
+- **Search nyaa.si** by category and filter (trusted only, no remakes). Results come sorted by most seeders, the uploads that stream best, or by date, size or downloads, across every match rather than just the newest. **Load more** pages through up to 1000 results. Open any result to see its file list before downloading.
 - **Streaming first.** Press **Stream** to play an episode within seconds. WebTorrent fetches the pieces near the playhead first. Nothing is kept: the data goes to a hidden temporary folder that's deleted when playback stops. The episode stays in the library so you can stream it again. If you rewatch a lot, Settings can keep recently streamed episodes up to a size you choose, so they replay without peers. This is off by default.
 - **Download only what you want to keep.** Press **Download** in Search, or on any library episode, even mid-stream. An episode streamed and then downloaded keeps what's already fetched.
 - **In-app player.** mpv draws the video inside the app window, with Swarmplay's own controls: seek bar, volume, audio and subtitle tracks, and fullscreen. **Now streaming** at the foot of the sidebar shows the episode, download speed and peers. While streaming, the seek bar shades the parts already fetched, which play without waiting. When it buffers, the player shows the download speed and peer count.
@@ -23,7 +23,7 @@ A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a 
   - Folders can be nested and renamed.
   - Episodes move between folders by drag and drop.
   - Each episode has **Delete**. For a downloaded episode, **Delete file** frees the space and keeps the episode to stream, and **Remove from library** takes it out entirely. The series folder stays either way.
-- **Follow a series.** Pick any episode in Search and choose **Add series to library**. Swarmplay finds that group's other uploads of the series (same season and resolution) and lists them in the folder without downloading, each with **Stream** and **Download**. It checks nyaa every 30 minutes and adds new episodes as they come out, with a notification. Each check also refreshes the episodes' seeder counts.
+- **Follow a series.** Pick any episode in Search and choose **Add series to library**. Swarmplay finds that group's other uploads of the series (same season and resolution) and lists them in the folder without downloading, each with **Stream** and **Download**. The first check reads every page of results, so a long-running series lists all its episodes, not just the newest 75. After that it checks nyaa every 30 minutes and adds new episodes as they come out, with a notification. **Check now** reads every page again. Each check also refreshes the episodes' seeder counts.
 - **AniList.** Folders link to their AniList entry for the cover, alternate titles and episode count. An English-titled release still finds the folder you named in romaji. *Continue watching* sits at the top of the library.
 - **Background downloads.** Downloads keep going from the tray when you close the window. Swarmplay notifies you when an episode finishes, and seeds afterwards if you want.
 
@@ -62,7 +62,7 @@ npm run dev
 
 ## Using it
 
-1. **Search.** Type a show name. Click a result to open its details, tick the episodes you want, and pick a library folder (one is suggested from the release name).
+1. **Search.** Type a show name. Results start with the most seeded; change **Sort** or press **Load more** at the bottom for more. Click a result to open its details, tick the episodes you want, and pick a library folder (one is suggested from the release name).
 2. **Stream** plays the first ticked episode right away and adds the episodes to the library without saving them. **Download** saves the files in the background.
 3. **Downloads** shows progress, speed and peers for each download, with pause, resume and remove. Remove keeps the episodes in the library to stream, and can also delete the files. While you stream, the stream shows here too. The badge on **Downloads** counts only downloads still fetching, so streaming never adds to it.
 4. **Add series to library** (in the same panel) follows the series instead of picking one episode. Its new episodes show up in the folder with **Stream** and **Download**, and **Remove** hides one you don't want. Each one shows its seeders as of the last check, with ⚠ at two or fewer. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
@@ -115,7 +115,7 @@ nyaa.si RSS ──► search results ──► .torrent ──► WebTorrent ─
                                      mpv ◄── JSON IPC ── main process ◄── IPC ── React UI
 ```
 
-- **Search.** Results come from nyaa's RSS feed, which returns the newest 75 matches and ignores sort and page parameters. Swarmplay sorts the results itself. `.torrent` files are parsed by a small bencode decoder that also computes the info-hash.
+- **Search.** Results come from nyaa's search page, which sorts on the server and pages through up to 1000 matches, 75 a page. Its results table is read for the title, size, date, seeders, leechers, downloads and comment count, and the info-hash comes from the magnet link. If the page can't be read (a mirror with another layout, a changed layout, or an error), Swarmplay falls back to the RSS feed. That feed returns only the newest 75 matches, so Search says so and sorts those itself. A full follow check reads the pages one at a time, a second apart, and scheduled checks read only the newest page. `.torrent` files are parsed by a small bencode decoder that also computes the info-hash.
 - **Streaming.**
   - WebTorrent serves every active torrent at `http://127.0.0.1:<port>/webtorrent/<infoHash>/<path>`. mpv plays from that URL, and each range request moves WebTorrent's download priority to the pieces mpv is reading.
   - The server only answers requests that carry no browser `Origin`, so web pages can't read from it.
@@ -145,7 +145,7 @@ nyaa.si RSS ──► search results ──► .torrent ──► WebTorrent ─
 src/
   main/            Electron main process
     index.ts         window, tray, single-instance lock, notifications
-    nyaa.ts          nyaa RSS search and .torrent download
+    nyaa.ts          nyaa search (search page, RSS fallback) and .torrent download
     bencode.ts       bencode decoder and info-hash
     torrentFile.ts   .torrent parsing (file list, path safety)
     torrent.ts       WebTorrent engine, stream server, pause/resume

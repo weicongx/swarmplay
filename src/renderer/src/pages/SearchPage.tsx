@@ -8,15 +8,17 @@ import {
   type FolderInfo,
   type FollowResult,
   type NyaaResult,
+  type NyaaSearchPage,
+  type NyaaSort,
   type TorrentInfo
 } from '@shared/types'
 import { displayPath, errorMessage, FEW_SEEDERS, formatAge, formatBytes, magnetFor, seedersLabel } from '../format'
 
-type SortKey = 'date' | 'seeders' | 'size' | 'downloads'
+type SortKey = NyaaSort
 
 const SORTS: { id: SortKey; label: string }[] = [
-  { id: 'date', label: 'Newest' },
   { id: 'seeders', label: 'Most seeders' },
+  { id: 'date', label: 'Newest' },
   { id: 'downloads', label: 'Most downloaded' },
   { id: 'size', label: 'Largest' }
 ]
@@ -31,8 +33,15 @@ export default function SearchPage({
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('1_2')
   const [filter, setFilter] = useState(0)
-  const [sort, setSort] = useState<SortKey>('date')
+  // Most seeders first: those are the uploads that stream best.
+  const [sort, setSort] = useState<SortKey>('seeders')
   const [results, setResults] = useState<NyaaResult[] | null>(null)
+  // The last page fetched, for its total and whether there's more.
+  const [lastPage, setLastPage] = useState<NyaaSearchPage | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // Answers to an older search (or sort) are dropped when a newer one is running.
+  const searchId = useRef(0)
+  const searched = useRef<{ query: string; category: string; filter: number } | null>(null)
   const [recent, setRecent] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -46,18 +55,50 @@ export default function SearchPage({
     window.api.getRecentSearches().then(setRecent)
   }, [])
 
-  async function runSearch(q = query): Promise<void> {
+  async function runSearch(q = query, by = sort, where = { category, filter }): Promise<void> {
+    const id = ++searchId.current
     setQuery(q)
     setLoading(true)
     setError(null)
     setSelected(null)
     try {
-      setResults(await window.api.searchNyaa({ query: q, category, filter }))
+      const page = await window.api.searchNyaa({ query: q, ...where, sort: by, page: 1 })
+      if (id !== searchId.current) return
+      searched.current = { query: q, ...where }
+      setResults(page.results)
+      setLastPage(page)
       setRecent(await window.api.getRecentSearches())
     } catch (err) {
-      setError(errorMessage(err))
+      if (id === searchId.current) setError(errorMessage(err))
     } finally {
-      setLoading(false)
+      if (id === searchId.current) setLoading(false)
+    }
+  }
+
+  async function loadMore(): Promise<void> {
+    if (!lastPage?.hasMore || !searched.current) return
+    const id = searchId.current
+    setLoadingMore(true)
+    try {
+      const page = await window.api.searchNyaa({ ...searched.current, sort, page: lastPage.page + 1 })
+      if (id !== searchId.current) return
+      setResults((prev) => {
+        const seen = new Set((prev ?? []).map((r) => r.id))
+        return [...(prev ?? []), ...page.results.filter((r) => !seen.has(r.id))]
+      })
+      setLastPage(page)
+    } catch (err) {
+      if (id === searchId.current) setError(errorMessage(err))
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  // nyaa sorts across every match, so a new sort is a new search; RSS results are sorted here.
+  function changeSort(by: SortKey): void {
+    setSort(by)
+    if (searched.current && lastPage && !lastPage.limited) {
+      void runSearch(searched.current.query, by, searched.current)
     }
   }
 
@@ -123,12 +164,16 @@ export default function SearchPage({
           <>
             <div className="results-header">
               <span className="muted">
-                {sorted.length} result{sorted.length === 1 ? '' : 's'}
-                {sorted.length >= 75 && ' (newest 75; refine your search for more)'}
+                {lastPage && lastPage.total > sorted.length
+                  ? `${sorted.length} of ${lastPage.total >= 1000 ? '1000+' : lastPage.total} results`
+                  : `${sorted.length} result${sorted.length === 1 ? '' : 's'}`}
+                {lastPage?.limited &&
+                  sorted.length >= 75 &&
+                  " (newest 75: nyaa's search page couldn't be read, so refine your search for more)"}
               </span>
               <label className="muted">
                 Sort{' '}
-                <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+                <select value={sort} onChange={(e) => changeSort(e.target.value as SortKey)}>
                   {SORTS.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.label}
@@ -171,6 +216,13 @@ export default function SearchPage({
               </tbody>
             </table>
             {sorted.length === 0 && <p className="muted">No torrents matched.</p>}
+            {lastPage?.hasMore && (
+              <div className="load-more">
+                <button onClick={loadMore} disabled={loadingMore || loading}>
+                  {loadingMore ? 'Loading…' : 'Load more'}
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
