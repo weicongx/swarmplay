@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppApi, PlayerState, TorrentStatusInfo } from '@shared/types'
+import type { AppApi, PlayerState, TorrentStatusInfo, UpdateStatus } from '@shared/types'
 
 const api: AppApi = {
   searchNyaa: (params) => ipcRenderer.invoke('nyaa:search', params),
@@ -27,6 +27,15 @@ const api: AppApi = {
   },
   tryAnotherRelease: () => ipcRenderer.invoke('player:tryAnother'),
   getStreamCacheSize: () => ipcRenderer.invoke('torrents:streamCacheSize'),
+  refreshSeeders: (folderId) => ipcRenderer.invoke('library:refreshSeeders', folderId),
+  getUpdateStatus: () => ipcRenderer.invoke('updates:get'),
+  checkForUpdate: () => ipcRenderer.invoke('updates:check'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  onUpdateStatus: (cb) => {
+    const listener = (_e: IpcRendererEvent, s: UpdateStatus): void => cb(s)
+    ipcRenderer.on('updates:status', listener)
+    return () => ipcRenderer.removeListener('updates:status', listener)
+  },
   setVideoBounds: (rect) => ipcRenderer.send('player:bounds', rect),
   streamNow: (req, fileIndex) => ipcRenderer.invoke('player:streamNow', req, fileIndex),
   setWatched: (torrentId, fileIndex, watched) =>

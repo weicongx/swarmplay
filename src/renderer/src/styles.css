@@ -136,6 +136,23 @@ select:focus {
 .now-streaming.slow {
   border-left-color: var(--amber);
 }
+.now-streaming.clickable {
+  cursor: pointer;
+}
+.update-chip {
+  margin-top: auto;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  text-align: left;
+}
+.update-chip + .now-streaming {
+  margin-top: 8px;
+}
+.now-streaming.clickable:hover {
+  background: var(--panel-2);
+}
 .now-label {
   font-size: 10px;
   font-weight: 700;
@@ -285,6 +302,21 @@ h1 {
 }
 .results tbody tr {
   cursor: pointer;
+}
+.results .row-stream {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  margin-right: 8px;
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.results tbody tr:hover .row-stream:not(:disabled),
+.results tbody tr.selected .row-stream:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
 }
 .results tbody tr.trusted {
   background: var(--trusted);
@@ -1157,4 +1189,72 @@ select.move-to {
   border-top: 1px solid var(--divider);
   font-size: 13px;
   max-width: 560px;
+}
+
+.player-mini-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+}
+
+/* The player shrunk into the corner while browsing; mpv's window sits over .mini-video. */
+.mini-player {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  width: 352px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.mini-video {
+  height: 198px;
+  background: #000;
+  cursor: pointer;
+}
+.mini-progress {
+  height: 3px;
+  background: var(--divider);
+}
+.mini-progress > div {
+  height: 100%;
+  background: var(--accent);
+}
+.mini-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.mini-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini-status {
+  font-size: 11px;
+}
+.mini-player .player-slow {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.update-notes {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: inherit;
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--divider);
+  border-radius: 6px;
 }

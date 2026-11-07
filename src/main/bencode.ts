@@ -9,7 +9,8 @@ export interface Decoded {
   info: Buffer | null
 }
 
-export function bdecode(buf: Buffer): Decoded {
+/** `keyEncoding` latin1 keeps binary dict keys (a scrape's info-hashes) intact. */
+export function bdecode(buf: Buffer, keyEncoding: BufferEncoding = 'utf8'): Decoded {
   let pos = 0
   let info: Buffer | null = null
 
@@ -32,7 +33,7 @@ export function bdecode(buf: Buffer): Decoded {
       pos++
       const dict: { [key: string]: BValue } = {}
       while (buf[pos] !== 0x65) {
-        const key = (next(depth + 1) as Buffer).toString('utf8')
+        const key = (next(depth + 1) as Buffer).toString(keyEncoding)
         const start = pos
         dict[key] = next(depth + 1)
         if (depth === 0 && key === 'info') info = buf.subarray(start, pos)

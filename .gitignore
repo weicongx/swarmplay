@@ -4,3 +4,4 @@ dist/
 dist-*/
 vendor/
 .claude/
+scripts/cdp/logs/

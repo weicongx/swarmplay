@@ -966,6 +966,11 @@ async function deleteFilesOf(entry: Entry, indexes: number[]): Promise<void> {
   for (const d of [...dirs].sort((a, b) => b.length - a.length)) {
     await rmdir(d).catch(() => {})
   }
+  // The save folder too (a series folder), and empty parents, but never the library folder itself.
+  const library = resolve(getSettings().libraryRoot)
+  for (let d = root; d.toLowerCase().startsWith(library.toLowerCase() + sep); d = dirname(d)) {
+    if (basename(d) === STREAM_DIR || !(await rmdir(d).then(() => true, () => false))) break
+  }
 }
 
 // --- Stream folders ---------------------------------------------------------

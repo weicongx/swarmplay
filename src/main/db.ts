@@ -118,6 +118,10 @@ const MIGRATIONS: string[] = [
   `
   -- Seeders as of the last follow check, to warn before streaming a dead upload. NULL: unknown.
   ALTER TABLE releases ADD COLUMN seeders INTEGER;
+  `,
+  `
+  -- JSON: the audio and subtitle tracks last picked for the series (TrackPrefs in player.ts).
+  ALTER TABLE folders ADD COLUMN track_prefs TEXT;
   `
 ]
 
@@ -159,6 +163,8 @@ function defaultSettings(): Settings {
     notifyNewEpisodes: true,
     upscaler: 'off',
     autoSkip: 'off',
+    autoTryAnother: false,
+    autoUpdateCheck: true,
     streamCacheGB: 0
   }
 }

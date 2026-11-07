@@ -47,6 +47,11 @@ export default function LibraryPage({ initialFolder = null }: { initialFolder?: 
     })
   }, [refresh])
 
+  // Opening a folder brings its episodes' seeder counts up to date (the next refresh shows them).
+  useEffect(() => {
+    if (typeof at === 'number') window.api.refreshSeeders(at).catch(() => {})
+  }, [at])
+
   const run = (fn: () => Promise<unknown>): void => {
     setError(null)
     fn()

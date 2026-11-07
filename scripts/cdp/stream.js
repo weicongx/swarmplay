@@ -1,0 +1,22 @@
+// Stream an episode, check that the next one is fetched ahead near the end, and
+// that Next then starts quickly. Uses the test folder (see lib.js).
+const { lib, folder } = await setup()
+const [a, b] = episodeNums(lib, folder)
+if (b == null) throw new Error('The test folder needs two episodes')
+let t = Date.now()
+await playEpisode(folder, a)
+let s = await loaded()
+note('episode', a, 'started in', Date.now() - t, 'ms;', s.title, '| peers', s.numPeers)
+await window.api.playerCommand({ type: 'seek', seconds: s.duration * 0.88 })
+const ahead = await waitFor(async () => (await window.api.listTorrents()).find((x) => x.aheadFile != null), 60000, 500).catch(() => null)
+note('next episode fetching ahead', ahead != null)
+await sleep(8000)
+t = Date.now()
+await window.api.playerCommand({ type: 'next' })
+// Weekly torrents all hold file 0, so compare the torrent too.
+await waitFor(async () => { const n = await window.api.getPlayerState(); return n.torrentId !== s.torrentId || n.fileIndex !== s.fileIndex }, 30000, 100)
+s = await loaded()
+note('Next started', s.episodeLabel, 'in', Date.now() - t, 'ms')
+await window.api.playerCommand({ type: 'close' })
+await sleep(2000)
+return log.join('\n')

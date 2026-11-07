@@ -60,6 +60,22 @@ interface NowPlaying {
   local: boolean
   /** The next episode has started loading */
   aheadStarted: boolean
+  /** The episode's series, whose track choices apply */
+  folderId: number | null
+  /** The series' track choices have been applied to this file */
+  tracksApplied: boolean
+}
+
+/** A track as remembered for a series: matched by language, then by name, in its other episodes. */
+interface TrackPick {
+  lang: string | null
+  title: string | null
+}
+
+interface TrackPrefs {
+  audio?: TrackPick
+  /** null: subtitles off */
+  sub?: TrackPick | null
 }
 
 interface Chapter {
@@ -74,6 +90,8 @@ let chapters: Chapter[] = []
 let skipOffered = new Set<number>()
 /** mpv isn't advancing playback: paused, seeking, or waiting for data. */
 let coreIdle = true
+/** mpv's track list for the current file */
+let tracks: MpvTrack[] = []
 
 /** Buffering this long, or this long without peers, suggests trying another release. */
 const SLOW_AFTER_MS = 15_000
@@ -116,6 +134,7 @@ function blankState(): PlayerState {
     audioTracks: [],
     subTracks: [],
     hasNext: false,
+    continued: false,
     fullscreen: false,
     upscaler: 'off',
     error: null
@@ -159,8 +178,12 @@ export function findMpv(): string | null {
   return candidates.find((p) => existsSync(p)) ?? null
 }
 
-/** `startAt` overrides where playback would resume, e.g. when switching releases mid-episode. */
-export async function play(torrentId: number, fileIndex: number, startAt?: number): Promise<void> {
+/**
+ * `startAt` overrides where playback would resume, e.g. when switching releases
+ * mid-episode. `continued` marks a start the user didn't ask for (autoplay, a
+ * release switch), which keeps the player's view as it is.
+ */
+export async function play(torrentId: number, fileIndex: number, startAt?: number, continued = false): Promise<void> {
   const mpv = findMpv()
   if (!mpv) {
     throw new Error(
@@ -184,8 +207,11 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
     duration: null,
     lastSaved: Date.now(),
     local: target.source === target.localPath,
-    aheadStarted: false
+    aheadStarted: false,
+    folderId: describeEpisode(torrentId, fileIndex).folderId,
+    tracksApplied: false
   }
+  tracks = []
   cache = { end: 0, eof: false }
   chapters = []
   coreIdle = true
@@ -211,7 +237,8 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
     muted: state.muted,
     upscaler: state.upscaler,
     fullscreen: mainWin?.isFullScreen() ?? false,
-    hasNext: nextEpisode(torrentId, fileIndex) != null
+    hasNext: nextEpisode(torrentId, fileIndex) != null,
+    continued
   })
   videoHeight = null
   mainWin?.show()
@@ -236,8 +263,10 @@ export function playerCommand(cmd: PlayerCommand): void {
     case 'toggle-mute':
       return command('cycle', 'mute')
     case 'audio':
+      rememberTrack('audio', cmd.id)
       return command('set_property', 'aid', cmd.id)
     case 'sub':
+      rememberTrack('sub', cmd.id)
       return command('set_property', 'sid', cmd.id ?? 'no')
     case 'next':
       return playNext(false)
@@ -355,9 +384,9 @@ function playNext(onlyIfFinished: boolean): void {
         (setState({ buffering: true }),
         addRelease(next.releaseId, false).then(({ torrentId, fileIndex }) => {
           if (fileIndex == null) throw new Error('that torrent has no video file')
-          return play(torrentId, fileIndex)
+          return play(torrentId, fileIndex, undefined, onlyIfFinished)
         }))
-      : play(next.torrentId, next.fileIndex)
+      : play(next.torrentId, next.fileIndex, undefined, onlyIfFinished)
   go.catch((err) => setState({ buffering: false, error: `Couldn't play the next episode: ${err.message}` }))
 }
 
@@ -668,6 +697,7 @@ function onMessage(msg: MpvMessage): void {
     current.loaded = true
     setState({ error: null })
     updateBuffering()
+    applyTrackPrefs()
   } else if (msg.event === 'property-change') {
     switch (msg.name) {
       // duration can be reported just before file-loaded, and only changes once per file.
@@ -719,7 +749,8 @@ function onMessage(msg: MpvMessage): void {
         }
         break
       case 'track-list': {
-        const tracks = (Array.isArray(msg.data) ? msg.data : []) as MpvTrack[]
+        tracks = (Array.isArray(msg.data) ? msg.data : []) as MpvTrack[]
+        applyTrackPrefs()
         const toTrack = (t: MpvTrack): PlayerTrack => ({
           id: t.id,
           title: t.title ?? null,
@@ -741,5 +772,62 @@ function onMessage(msg: MpvMessage): void {
     } else if (msg.reason === 'error') {
       setState({ buffering: false, error: `Couldn't play this file${msg.file_error ? `: ${msg.file_error}` : ''}` })
     }
+  }
+}
+
+function readTrackPrefs(folderId: number): TrackPrefs {
+  const row = getDb().prepare('SELECT track_prefs FROM folders WHERE id = ?').get(folderId) as
+    | { track_prefs: string | null }
+    | undefined
+  try {
+    return row?.track_prefs ? (JSON.parse(row.track_prefs) as TrackPrefs) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Save a track picked in the player as the series' choice for its other episodes. */
+function rememberTrack(type: 'audio' | 'sub', id: number | null): void {
+  if (current?.folderId == null) return
+  const t = id == null ? null : tracks.find((x) => x.type === type && x.id === id)
+  if (t === undefined) return
+  const pick = t && { lang: t.lang?.toLowerCase() ?? null, title: t.title ?? null }
+  const prefs = { ...readTrackPrefs(current.folderId), [type]: pick }
+  getDb().prepare('UPDATE folders SET track_prefs = ? WHERE id = ?').run(JSON.stringify(prefs), current.folderId)
+}
+
+/**
+ * Once per file, when its tracks are known: select the series' remembered audio
+ * and subtitles. A track counts as the same if its language matches (and, between
+ * several, its name); without a language, only its name can match. Nothing
+ * matching leaves mpv's own choice.
+ */
+function applyTrackPrefs(): void {
+  if (!current?.loaded || current.tracksApplied || current.folderId == null || tracks.length === 0) return
+  current.tracksApplied = true
+  const prefs = readTrackPrefs(current.folderId)
+  const pick = (type: 'audio' | 'sub', want: TrackPick): MpvTrack | undefined => {
+    const name = (s: string | null | undefined): string => (s ?? '').trim().toLowerCase()
+    const score = (t: MpvTrack): number =>
+      want.lang
+        ? t.lang?.toLowerCase() === want.lang
+          ? 2 + (name(t.title) === name(want.title) ? 1 : 0)
+          : 0
+        : want.title && name(t.title) === name(want.title)
+          ? 1
+          : 0
+    return tracks
+      .filter((t) => t.type === type && score(t) > 0)
+      .sort((a, b) => score(b) - score(a) || Number(b.selected === true) - Number(a.selected === true))[0]
+  }
+  if (prefs.audio) {
+    const t = pick('audio', prefs.audio)
+    if (t && !t.selected) command('set_property', 'aid', t.id)
+  }
+  if (prefs.sub === null) {
+    if (tracks.some((t) => t.type === 'sub' && t.selected)) command('set_property', 'sid', 'no')
+  } else if (prefs.sub) {
+    const t = pick('sub', prefs.sub)
+    if (t && !t.selected) command('set_property', 'sid', t.id)
   }
 }

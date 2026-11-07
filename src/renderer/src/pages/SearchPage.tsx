@@ -46,6 +46,8 @@ export default function SearchPage({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<NyaaResult | null>(null)
+  /** The result a row's Stream button is starting */
+  const [starting, setStarting] = useState<number | null>(null)
 
   useEffect(() => {
     window.api.getSettings().then((s) => {
@@ -91,6 +93,30 @@ export default function SearchPage({
       if (id === searchId.current) setError(errorMessage(err))
     } finally {
       setLoadingMore(false)
+    }
+  }
+
+  // One click from the results: every episode in the torrent goes in the library (in
+  // the series' folder, if it has one), and the first starts playing.
+  async function streamResult(r: NyaaResult): Promise<void> {
+    setStarting(r.id)
+    setError(null)
+    try {
+      const info = await window.api.getTorrentInfo(r.torrentUrl)
+      const videos = info.files
+        .filter((f) => VIDEO_EXT.test(f.path))
+        .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
+      if (videos.length === 0) throw new Error('This torrent has no video files.')
+      // A series name goes in the folder that matches it, or a new one.
+      const folder = info.series ? { name: info.series } : undefined
+      await window.api.streamNow(
+        { torrentUrl: r.torrentUrl, nyaaId: r.id, fileIndexes: videos.map((f) => f.index), folder },
+        videos[0].index
+      )
+    } catch (err) {
+      setError(`Couldn't stream ${r.title}: ${errorMessage(err)}`)
+    } finally {
+      setStarting(null)
     }
   }
 
@@ -158,7 +184,7 @@ export default function SearchPage({
           </div>
         )}
 
-        {error && <div className="error">Search failed: {error}</div>}
+        {error && <div className="error">{error.startsWith("Couldn't stream") ? error : `Search failed: ${error}`}</div>}
 
         {sorted && (
           <>
@@ -200,7 +226,21 @@ export default function SearchPage({
                     className={`${selected?.id === r.id ? 'selected' : ''} ${r.trusted ? 'trusted' : ''} ${r.remake ? 'remake' : ''}`}
                     onClick={() => setSelected(r)}
                   >
-                    <td className="title">{r.title}</td>
+                    <td className="title">
+                      <button
+                        className="row-stream"
+                        disabled={starting != null}
+                        title={starting === r.id ? 'Starting…' : 'Stream now'}
+                        aria-label={`Stream ${r.title}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void streamResult(r)
+                        }}
+                      >
+                        {starting === r.id ? '…' : '▶'}
+                      </button>
+                      {r.title}
+                    </td>
                     <td className="num">{r.size}</td>
                     <td className="num">{formatAge(r.pubDate)}</td>
                     <td

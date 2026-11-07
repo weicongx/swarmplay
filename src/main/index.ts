@@ -17,6 +17,7 @@ import { attachPlayerWindow, stopPlayer } from './player'
 // layers the page above child windows, which hides the video (audio still plays).
 app.commandLine.appendSwitch('disable-direct-composition')
 import { createTray } from './tray'
+import { startUpdateChecks } from './updates'
 
 let win: BrowserWindow | null = null
 let quitting = false
@@ -126,6 +127,11 @@ if (!app.requestSingleInstanceLock()) {
       )
     })
     startFollowChecks()
+    startUpdateChecks((version) =>
+      notify('Update available', `Swarmplay ${version} is out. Install it from Settings.`, () =>
+        win?.webContents.send('app:navigate', { page: 'settings', folderId: null })
+      )
+    )
 
     app.on('activate', showWindow)
   })

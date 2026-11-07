@@ -2,6 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { AddTorrentRequest, NyaaResult, NyaaSearchParams, PlayerCommand, Settings, VideoRect } from '@shared/types'
 import { getRecentSearches, getSettings, recordSearch, setSettings } from './db'
 import { getTorrentInfo, searchNyaa } from './nyaa'
+import { refreshFolderSeeders } from './scrape'
+import { checkForUpdate, getUpdateStatus, installUpdate } from './updates'
 import {
   addStream,
   addTorrent,
@@ -25,6 +27,7 @@ import {
   setWatched
 } from './player'
 import {
+  addToFolder,
   createFolder,
   deleteEpisode,
   deleteFolder,
@@ -36,7 +39,6 @@ import {
   moveEpisodes,
   moveFolder,
   renameFolder,
-  resolveFolder,
   suggestFolder
 } from './library'
 import { searchAniList } from './anilist'
@@ -63,7 +65,7 @@ export function registerIpc(): void {
     return settings
   })
 
-  ipcMain.handle('torrents:add', async (_e, req: AddTorrentRequest) => addTorrent(req, await resolveFolder(req.folder)))
+  ipcMain.handle('torrents:add', (_e, req: AddTorrentRequest) => addToFolder(req.folder, (folder) => addTorrent(req, folder)))
   ipcMain.handle('torrents:list', () => listTorrents())
   ipcMain.handle('torrents:pause', (_e, id: number) => pauseTorrent(id))
   ipcMain.handle('torrents:resume', (_e, id: number) => resumeTorrent(id))
@@ -80,11 +82,15 @@ export function registerIpc(): void {
   ipcMain.handle('player:tryAnother', () => tryAnotherRelease())
   ipcMain.on('player:bounds', (_e, rect: VideoRect | null) => setVideoBounds(rect))
   ipcMain.handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
-    const { id } = await addStream(req, await resolveFolder(req.folder))
+    const { id } = await addToFolder(req.folder, (folder) => addStream(req, folder))
     await play(id, fileIndex)
   })
 
   ipcMain.handle('library:get', () => getLibrary())
+  ipcMain.handle('library:refreshSeeders', (_e, folderId: number) => refreshFolderSeeders(folderId))
+  ipcMain.handle('updates:get', () => getUpdateStatus())
+  ipcMain.handle('updates:check', () => checkForUpdate())
+  ipcMain.handle('updates:install', () => installUpdate())
   ipcMain.handle('library:createFolder', (_e, name: string, parentId: number | null) => createFolder(name, parentId))
   ipcMain.handle('library:renameFolder', (_e, id: number, name: string) => renameFolder(id, name))
   ipcMain.handle('library:deleteFolder', (_e, id: number, deleteDownloads: boolean) =>

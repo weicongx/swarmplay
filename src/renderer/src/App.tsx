@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
-import type { PlayerState } from '@shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { PlayerState, UpdateStatus } from '@shared/types'
 import DownloadsPage from './pages/DownloadsPage'
 import LibraryPage from './pages/LibraryPage'
-import PlayerView from './pages/PlayerView'
+import PlayerView, { MiniPlayer } from './pages/PlayerView'
 import SearchPage from './pages/SearchPage'
 import SettingsPage from './pages/SettingsPage'
 import { formatSpeed } from './format'
@@ -22,6 +22,10 @@ export default function App(): JSX.Element {
   // Bumping `n` remounts the library at the requested folder (e.g. from a notification click).
   const [libraryTarget, setLibraryTarget] = useState<{ folderId: number | null; n: number }>({ folderId: null, n: 0 })
   const [player, setPlayer] = useState<PlayerState | null>(null)
+  /** The player is shrunk into a corner while the user browses */
+  const [mini, setMini] = useState(false)
+  const [update, setUpdate] = useState<UpdateStatus | null>(null)
+  const playingKey = useRef<string | null>(null)
 
   useEffect(
     () =>
@@ -42,10 +46,23 @@ export default function App(): JSX.Element {
   )
 
   useEffect(() => {
+    window.api.getUpdateStatus().then(setUpdate)
+    return window.api.onUpdateStatus(setUpdate)
+  }, [])
+
+  useEffect(() => {
     window.api.getPlayerState().then(setPlayer)
     return window.api.onPlayerState(setPlayer)
   }, [])
 
+  // An episode the user starts opens the full player; autoplay and release switches keep the view.
+  useEffect(() => {
+    const key = player?.open ? `${player.torrentId}:${player.fileIndex}` : null
+    if (key !== playingKey.current && (key == null || !player?.continued)) setMini(false)
+    playingKey.current = key
+  }, [player])
+
+  const minimize = useCallback(() => setMini(true), [])
   const playing = player?.open === true
 
   return (
@@ -55,9 +72,10 @@ export default function App(): JSX.Element {
         {NAV.map((n) => (
           <button
             key={n.id}
-            className={`nav-item ${page === n.id && !playing ? 'active' : ''}`}
+            className={`nav-item ${page === n.id && (!playing || mini) ? 'active' : ''}`}
             onClick={() => {
-              if (playing) void window.api.playerCommand({ type: 'close' })
+              // Browsing keeps the episode playing, in the mini player.
+              if (playing) setMini(true)
               setPage(n.id)
             }}
           >
@@ -65,7 +83,21 @@ export default function App(): JSX.Element {
             {n.id === 'downloads' && activeDownloads > 0 && <span className="badge">{activeDownloads}</span>}
           </button>
         ))}
-        {playing && <NowStreaming state={player} />}
+        {update?.available && (
+          <button
+            className="update-chip"
+            onClick={() => {
+              if (playing) setMini(true)
+              setPage('settings')
+            }}
+            title="See what's new and install it"
+          >
+            {update.phase === 'downloading'
+              ? `Downloading update… ${Math.round(update.progress * 100)}%`
+              : `Update to ${update.available.version}`}
+          </button>
+        )}
+        {playing && <NowStreaming state={player} onOpen={mini ? () => setMini(false) : undefined} />}
       </nav>
       <main className="content">
         {/* Search stays mounted so results survive switching tabs. */}
@@ -82,17 +114,26 @@ export default function App(): JSX.Element {
         {page === 'library' && <LibraryPage key={libraryTarget.n} initialFolder={libraryTarget.folderId} />}
         {page === 'settings' && <SettingsPage />}
         {/* The player covers the current page, which stays mounted underneath. */}
-        {playing && <PlayerView state={player} />}
+        {playing &&
+          (mini ? (
+            <MiniPlayer state={player} onExpand={() => setMini(false)} />
+          ) : (
+            <PlayerView state={player} onMinimize={minimize} />
+          ))}
       </main>
     </div>
   )
 }
 
 /** What's playing, and how its stream is doing, at the foot of the sidebar. */
-function NowStreaming({ state }: { state: PlayerState }): JSX.Element {
+function NowStreaming({ state, onOpen }: { state: PlayerState; onOpen?: () => void }): JSX.Element {
   const peers = `${state.numPeers} peer${state.numPeers === 1 ? '' : 's'}`
   return (
-    <div className={`now-streaming ${state.slow ? 'slow' : ''}`} title={state.title}>
+    <div
+      className={`now-streaming ${state.slow ? 'slow' : ''} ${onOpen ? 'clickable' : ''}`}
+      title={onOpen ? `${state.title}\nClick for the full player` : state.title}
+      onClick={onOpen}
+    >
       <div className="now-label">{state.local ? 'Now playing' : 'Now streaming'}</div>
       <div className="now-title">{state.series ?? 'Unsorted'}</div>
       {state.episodeLabel && <div className="now-episode">{state.episodeLabel}</div>}

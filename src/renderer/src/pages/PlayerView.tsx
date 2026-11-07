@@ -5,12 +5,25 @@ import { errorMessage, formatClock, formatSpeed, UPSCALERS } from '../format'
 const HIDE_CONTROLS_MS = 3000
 
 /**
+ * Episodes already switched to another upload automatically, so a slow replacement
+ * doesn't start a chain of switches. Kept here so it outlasts switching between
+ * the full and mini player.
+ */
+const autoTried = new Set<string>()
+
+/**
  * The in-app player. The video itself is mpv drawing into a separate window that
  * the main process keeps exactly over the `.player-video` box, so nothing can be
  * drawn on top of it: status and controls live in the bars around it. That window
  * lets the mouse through, so clicks on the video arrive here as usual.
  */
-export default function PlayerView({ state }: { state: PlayerState }): JSX.Element {
+export default function PlayerView({
+  state,
+  onMinimize
+}: {
+  state: PlayerState
+  onMinimize: () => void
+}): JSX.Element {
   const videoRef = useRef<HTMLDivElement>(null)
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [seekPreview, setSeekPreview] = useState<number | null>(null)
@@ -37,24 +50,7 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
     send({ type: 'fullscreen' })
   }
 
-  // Tell the main process where the video goes, whenever the box moves or resizes.
-  useLayoutEffect(() => {
-    const el = videoRef.current
-    if (!el) return
-    const report = (): void => {
-      const r = el.getBoundingClientRect()
-      window.api.setVideoBounds({ x: r.left, y: r.top, width: r.width, height: r.height })
-    }
-    report()
-    const ro = new ResizeObserver(report)
-    ro.observe(el)
-    window.addEventListener('resize', report)
-    return () => {
-      ro.disconnect()
-      window.removeEventListener('resize', report)
-      window.api.setVideoBounds(null)
-    }
-  }, [])
+  useVideoBounds(videoRef)
 
   // In fullscreen, hide the bars (and cursor) after a few seconds without mouse movement.
   useEffect(() => {
@@ -93,6 +89,7 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
         ArrowDown: () => send({ type: 'volume', value: state.volume - 5 }),
         m: () => send({ type: 'toggle-mute' }),
         f: () => send({ type: 'fullscreen' }),
+        i: () => !state.fullscreen && onMinimize(),
         n: () => state.hasNext && send({ type: 'next' }),
         s: () => state.skip && send({ type: 'skip-chapter' }),
         u: () => {
@@ -110,7 +107,7 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [state.volume, state.fullscreen, state.hasNext, state.skip, state.upscaler, nvidia])
+  }, [state.volume, state.fullscreen, state.hasNext, state.skip, state.upscaler, nvidia, onMinimize])
 
   const duration = state.duration ?? 0
   const shownPos = seekPreview ?? state.timePos
@@ -135,6 +132,11 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
               {!state.local &&
                 ` ↓ ${formatSpeed(state.downloadSpeed)} · ${state.numPeers} peer${state.numPeers === 1 ? '' : 's'}`}
             </span>
+          )}
+          {!state.fullscreen && (
+            <button className="player-mini-btn" onClick={onMinimize} title="Keep watching in a corner while you browse (I)">
+              Mini player
+            </button>
           )}
         </div>
       )}
@@ -221,6 +223,69 @@ export default function PlayerView({ state }: { state: PlayerState }): JSX.Eleme
   )
 }
 
+/** Tell the main process where the video goes, whenever the box moves or resizes. */
+function useVideoBounds(ref: React.RefObject<HTMLDivElement>): void {
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const report = (): void => {
+      const r = el.getBoundingClientRect()
+      window.api.setVideoBounds({ x: r.left, y: r.top, width: r.width, height: r.height })
+    }
+    report()
+    const ro = new ResizeObserver(report)
+    ro.observe(el)
+    window.addEventListener('resize', report)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', report)
+      window.api.setVideoBounds(null)
+    }
+  }, [ref])
+}
+
+/**
+ * The player shrunk into a corner, so browsing the app doesn't stop the episode.
+ * Clicking the video (or the sidebar's Now streaming) brings the full player back.
+ */
+export function MiniPlayer({ state, onExpand }: { state: PlayerState; onExpand: () => void }): JSX.Element {
+  const videoRef = useRef<HTMLDivElement>(null)
+  const send = (cmd: PlayerCommand): void => void window.api.playerCommand(cmd)
+  useVideoBounds(videoRef)
+  const duration = state.duration ?? 0
+  const played = duration ? (Math.min(state.timePos, duration) / duration) * 100 : 0
+  return (
+    <div className="mini-player">
+      <div className="mini-video" ref={videoRef} onClick={onExpand} title="Back to the full player" />
+      <div className="mini-progress">
+        <div style={{ width: `${played}%` }} />
+      </div>
+      {state.error && <div className="player-error">{state.error}</div>}
+      <SlowReleaseBar state={state} />
+      <div className="mini-bar">
+        <button className="ctl" onClick={() => send({ type: 'toggle-pause' })} title={state.paused ? 'Play' : 'Pause'}>
+          {state.paused ? '▶' : '❚❚'}
+        </button>
+        <div className="mini-title" title={state.title}>
+          <span className="player-series">{state.series ?? 'Unsorted'}</span>
+          {state.episodeLabel && <span className="muted"> · {state.episodeLabel}</span>}
+          <div className="muted mini-status">
+            {state.buffering && !state.error
+              ? `Buffering…${state.local ? '' : ` ↓ ${formatSpeed(state.downloadSpeed)}`}`
+              : `${formatClock(state.timePos)} / ${duration ? formatClock(duration) : '--:--'}`}
+          </div>
+        </div>
+        <button className="ctl" onClick={onExpand} title="Full player">
+          ⤢
+        </button>
+        <button className="ctl" onClick={() => send({ type: 'close' })} title="Stop">
+          ✕
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /** Offers another upload of the episode when this one is stuck buffering or has no peers. */
 function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
   const [dismissed, setDismissed] = useState<string | null>(null)
@@ -239,17 +304,34 @@ function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
     return () => clearTimeout(t)
   }, [message])
 
-  const tryAnother = async (): Promise<void> => {
+  const tryAnother = async (auto = false): Promise<void> => {
     setBusy(true)
     setMessage(null)
     try {
-      setMessage({ text: `Switched to ${await window.api.tryAnotherRelease()}`, error: false })
+      const name = await window.api.tryAnotherRelease()
+      setMessage({ text: `${auto ? 'The release was slow, so switched' : 'Switched'} to ${name}`, error: false })
     } catch (err) {
       setMessage({ text: errorMessage(err), error: true })
     } finally {
       setBusy(false)
     }
   }
+
+  // With the setting on, the first slow spell of an episode switches without asking.
+  const episodeKey = `${state.series ?? ''}|${state.episodeLabel ?? state.title}`
+  useEffect(() => {
+    if (!state.slow || state.error || busy || autoTried.has(episodeKey)) return
+    let cancelled = false
+    window.api.getSettings().then((s) => {
+      if (cancelled || !s.autoTryAnother || autoTried.has(episodeKey)) return
+      autoTried.add(episodeKey)
+      void tryAnother(true)
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.slow, state.error, busy, episodeKey])
 
   if (busy) return <div className="player-slow">Looking for another upload of this episode…</div>
   if (message) {
@@ -268,7 +350,7 @@ function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
       <span className="player-slow-text">
         This release is slow{state.numPeers === 0 ? ' (no peers)' : ''}. Try another?
       </span>
-      <button className="primary" onClick={tryAnother}>
+      <button className="primary" onClick={() => tryAnother()}>
         Try another
       </button>
       <button onClick={() => setDismissed(state.title)}>Dismiss</button>

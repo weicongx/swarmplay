@@ -365,6 +365,27 @@ export async function resolveFolder(choice: AddTorrentRequest['folder']): Promis
   return { id, name }
 }
 
+/**
+ * Resolve the folder for an add, and drop it again if it was made for this add
+ * and nothing went in it: the torrent was already filed in another folder, or
+ * adding it failed.
+ */
+export async function addToFolder<T>(
+  choice: AddTorrentRequest['folder'],
+  add: (folder: { id: number; name: string } | null) => Promise<T>
+): Promise<T> {
+  const db = getDb()
+  const { last } = db.prepare('SELECT COALESCE(MAX(id), 0) AS last FROM folders').get() as { last: number }
+  const folder = await resolveFolder(choice)
+  try {
+    return await add(folder)
+  } finally {
+    if (folder && folder.id > last && !db.prepare('SELECT 1 FROM episodes WHERE folder_id = ? LIMIT 1').get(folder.id)) {
+      db.prepare('DELETE FROM folders WHERE id = ?').run(folder.id)
+    }
+  }
+}
+
 /** Which existing folder a series name belongs in, for the search panel's "Save to". */
 export async function suggestFolder(series: string): Promise<{ folderId: number | null; name: string }> {
   const { folder } = await matchSeries(series)

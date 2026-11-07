@@ -1,0 +1,11 @@
+// The app is up: settings, library, mpv, and a nyaa search (search page, not the RSS fallback).
+const s = await window.api.getSettings()
+const lib = await window.api.getLibrary()
+const info = await window.api.getPlayerInfo()
+const page = await window.api.searchNyaa({ query: 'one piece 1080p', category: '1_2', filter: 0, sort: 'seeders' })
+const sorted = page.results.every((r, i, a) => i === 0 || a[i - 1].seeders >= r.seeders)
+note('library', s.libraryRoot, '|', lib.folders.length, 'folders,', lib.episodes.length, 'episodes')
+note('mpv', info.mpvPath ?? 'NOT FOUND')
+note('search', page.results.length, 'of', page.total, 'results; more', page.hasMore, '; from RSS', page.limited, '; sorted by seeders', sorted)
+if (!info.mpvPath || page.results.length === 0 || page.limited || !sorted) throw new Error('smoke check failed:\n' + log.join('\n'))
+return log.join('\n')

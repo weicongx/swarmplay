@@ -227,8 +227,26 @@ export interface Settings {
   upscaler: Upscaler
   /** Skip chapters named OP/Opening (and ED/Ending) without asking */
   autoSkip: 'off' | 'openings' | 'both'
+  /** When a stream is slow, switch to another upload of the episode without asking (once per episode) */
+  autoTryAnother: boolean
+  /** Look for a new version on GitHub at launch and every few hours */
+  autoUpdateCheck: boolean
   /** Keep this many GB of recently streamed episodes for replay; 0 deletes each stream when it ends */
   streamCacheGB: number
+}
+
+export interface UpdateStatus {
+  /** The running version */
+  current: string
+  /** A newer release on GitHub, if one was found */
+  available: { version: string; notes: string; size: number } | null
+  phase: 'idle' | 'checking' | 'downloading' | 'installing'
+  /** 0–1 while downloading */
+  progress: number
+  error: string | null
+  checkedAt: number | null
+  /** Updates install only in the installed app, not when running from source */
+  supported: boolean
 }
 
 /**
@@ -292,6 +310,8 @@ export interface PlayerState {
   audioTracks: PlayerTrack[]
   subTracks: PlayerTrack[]
   hasNext: boolean
+  /** Started by autoplay or a release switch rather than the user, so the view (mini or full) stays as it is */
+  continued: boolean
   fullscreen: boolean
   upscaler: Upscaler
   error: string | null
@@ -365,6 +385,13 @@ export interface AppApi {
   tryAnotherRelease(): Promise<string>
   /** Bytes in the stream folder, cached episodes included */
   getStreamCacheSize(): Promise<number>
+  /** Update a folder's not-yet-added episodes' seeder counts from the tracker; true if any changed */
+  refreshSeeders(folderId: number): Promise<boolean>
+  getUpdateStatus(): Promise<UpdateStatus>
+  checkForUpdate(): Promise<UpdateStatus>
+  /** Download the new version, run its installer and restart */
+  installUpdate(): Promise<void>
+  onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
   /** Place the video over this part of the page; null hides it. */
   setVideoBounds(rect: VideoRect | null): void
   /**
@@ -413,7 +440,7 @@ export interface AppApi {
   /** Add the release's torrent and start playing it while it downloads. */
   streamRelease(releaseId: number): Promise<void>
   /** Main process asks the window to show a page, e.g. after a notification is clicked. */
-  onNavigate(cb: (to: { page: 'library'; folderId: number | null }) => void): () => void
+  onNavigate(cb: (to: { page: 'library' | 'settings'; folderId: number | null }) => void): () => void
   /** Called about once a second with every torrent's status. Returns an unsubscribe function. */
   onTorrentsUpdate(cb: (torrents: TorrentStatusInfo[]) => void): () => void
 }

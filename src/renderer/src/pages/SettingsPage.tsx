@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings, type Upscaler } from '@shared/types'
-import { formatBytes, UPSCALERS } from '../format'
+import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings, type UpdateStatus, type Upscaler } from '@shared/types'
+import { errorMessage, formatBytes, UPSCALERS } from '../format'
 
 export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -109,6 +109,15 @@ export default function SettingsPage(): JSX.Element {
         <small className="muted">
           For releases whose chapters are named, such as OP and ED. Press S in the player to skip.
         </small>
+      </label>
+
+      <label className="inline">
+        <input
+          type="checkbox"
+          checked={settings.autoTryAnother}
+          onChange={(e) => update({ autoTryAnother: e.target.checked })}
+        />
+        <span>Switch to another upload automatically when a stream is slow</span>
       </label>
 
       <label className="inline">
@@ -232,7 +241,73 @@ export default function SettingsPage(): JSX.Element {
         />
       </div>
 
-      {version && <p className="muted version">Swarmplay {version}</p>}
+      <Updates
+        auto={settings.autoUpdateCheck}
+        onAuto={(on) => update({ autoUpdateCheck: on })}
+        version={version}
+      />
+    </div>
+  )
+}
+
+function Updates({
+  auto,
+  onAuto,
+  version
+}: {
+  auto: boolean
+  onAuto: (on: boolean) => void
+  version: string
+}): JSX.Element {
+  const [status, setStatus] = useState<UpdateStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    window.api.getUpdateStatus().then(setStatus)
+    return window.api.onUpdateStatus(setStatus)
+  }, [])
+
+  const install = (): void => {
+    setError(null)
+    window.api.installUpdate().catch((err) => setError(errorMessage(err)))
+  }
+  const busy = status != null && status.phase !== 'idle'
+  const a = status?.available
+
+  return (
+    <div className="updates">
+      <label className="inline">
+        <input type="checkbox" checked={auto} onChange={(e) => onAuto(e.target.checked)} />
+        <span>Check for updates automatically</span>
+      </label>
+      <div className="row">
+        <span className="muted version">Swarmplay {version}</span>
+        <button disabled={busy} onClick={() => window.api.checkForUpdate().then(setStatus)}>
+          {status?.phase === 'checking' ? 'Checking…' : 'Check now'}
+        </button>
+      </div>
+      {status && !a && status.checkedAt && !status.error && <small className="muted">You have the latest version.</small>}
+      {a && (
+        <div className="update-available">
+          <div className="row">
+            <span>
+              <b>Swarmplay {a.version}</b> is available ({formatBytes(a.size)}).
+            </span>
+            <button className="primary" disabled={busy} onClick={install}>
+              {status.phase === 'downloading'
+                ? `Downloading… ${Math.round(status.progress * 100)}%`
+                : status.phase === 'installing'
+                  ? 'Restarting…'
+                  : 'Install and restart'}
+            </button>
+          </div>
+          {!status.supported && (
+            <small className="muted">Running from source: this downloads and checks the installer, but doesn't run it.</small>
+          )}
+          {a.notes && <pre className="update-notes">{a.notes}</pre>}
+        </div>
+      )}
+      {(error ?? status?.error) && <small className="error-text">{error ?? status?.error}</small>}
     </div>
   )
 }

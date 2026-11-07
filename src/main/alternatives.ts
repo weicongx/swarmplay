@@ -82,7 +82,7 @@ export async function tryAnotherRelease(): Promise<string> {
     db.prepare('DELETE FROM episodes WHERE torrent_id = ? AND file_index = ?').run(torrentId, fileIndex)
   }
 
-  await play(newId, video.index, timePos)
+  await play(newId, video.index, timePos, true)
   await pruneStreamTorrents()
   return best.title
 }
