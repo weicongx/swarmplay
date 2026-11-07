@@ -1,7 +1,7 @@
 {
   "name": "swarmplay",
   "productName": "Swarmplay",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "description": "Search nyaa.si, download torrents, watch and organize anime",
   "author": "weicongx",
   "main": "./out/main/index.js",
