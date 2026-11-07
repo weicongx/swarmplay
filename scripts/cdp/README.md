@@ -8,7 +8,7 @@ node scripts\cdp\run.mjs scripts\cdp\smoke.js
 node scripts\cdp\run.mjs scripts\cdp\cleanup.js
 ```
 
-`relaunch.ps1` stops any running Swarmplay first, the installed app included, because the two share one database (`%APPDATA%\Swarmplay\swarmplay.db`). Start the installed app again afterwards.
+`relaunch.ps1` runs the app on a test profile: its own database, settings and library folder in `%LOCALAPPDATA%\ZZ Swarmplay test`, or in the folder set in `SWARMPLAY_PROFILE`. The checks never see your real library, and the installed app can stay open. It stops only an earlier run from this repo, along with that run's mpv. To start over, delete the profile folder.
 
 | Check | What it covers |
 |---|---|

@@ -16,6 +16,16 @@ import { attachPlayerWindow, stopPlayer } from './player'
 // The in-app player is mpv drawing into a child window. Chromium's DirectComposition
 // layers the page above child windows, which hides the video (audio still plays).
 app.commandLine.appendSwitch('disable-direct-composition')
+
+// From source, SWARMPLAY_PROFILE runs on a separate profile: its own database,
+// settings, backups and library folder (<profile>\Videos\Anime). Test runs then
+// never touch the installed app's data, and both can run at once, since the
+// single-instance lock is per profile too. Must run before anything reads a path.
+const profile = !app.isPackaged && process.env.SWARMPLAY_PROFILE
+if (profile) {
+  app.setPath('userData', profile)
+  app.setPath('videos', join(profile, 'Videos'))
+}
 import { createTray } from './tray'
 import { startUpdateChecks } from './updates'
 

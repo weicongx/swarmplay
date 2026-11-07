@@ -53,6 +53,8 @@ npm run dev
 
 `npm run dist` copies the installed mpv (`C:\Program Files\MPV Player`, or the folder in `MPV_DIR`) into `vendor/mpv` and bundles it into the installer.
 
+Running from source uses the installed app's database and library unless you set `SWARMPLAY_PROFILE` to a folder. The app then keeps its database, settings, backups and library (`<folder>\Videos\Anime`) there, and can run alongside the installed app. Installed builds ignore it. `scripts/cdp/relaunch.ps1` uses `%LOCALAPPDATA%\ZZ Swarmplay test` by default.
+
 | Command | What it does |
 |---|---|
 | `npm run dev` | Runs the app with hot reload |
