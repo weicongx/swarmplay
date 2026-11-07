@@ -16,6 +16,7 @@ node scripts\cdp\run.mjs scripts\cdp\cleanup.js
 | `stream.js` | Streaming an episode, fetching the next one ahead, Next starting quickly |
 | `tracks.js` | Audio and subtitle picks carrying over to the series' other episodes |
 | `mini.js` | The mini player while browsing, through autoplay, and back |
+| `another.js` | **Try another**: stopping mid-switch leaves the library as it was; a switch keeps the position and one library entry |
 | `cleanup.js` | Deletes the test folders and their files |
 
 Test data goes only in folders named `ZZ …` (`setup()` in `lib.js` follows a weekly series into "ZZ Stream Test"). Run `cleanup.js` when done; it deletes those folders with their downloads, so the library folder's `.swarmplay-streaming` ends up empty.

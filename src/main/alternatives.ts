@@ -80,14 +80,25 @@ async function switchRelease(): Promise<string> {
   if (!stillPlaying()) throw new Error('Playback moved on, so the upload was left as it is.')
 
   const folder = ep?.folder_id != null ? await resolveFolder({ id: ep.folder_id }) : null
-  const { id: newId } = await addStream({ torrentUrl: best.torrentUrl, nyaaId: best.id, fileIndexes: [video.index] }, folder)
+  const added = await addStream({ torrentUrl: best.torrentUrl, nyaaId: best.id, fileIndexes: [video.index] }, folder)
+  const newId = added.id
 
-  // The new upload takes over the episode: its watch state, and its place in a followed series.
+  // Checked again before the library changes, with no waiting from here to play():
+  // if playback moved on while the upload was added, the library stays as it was.
+  if (!stillPlaying()) {
+    if (!added.existed) db.prepare('DELETE FROM episodes WHERE torrent_id = ?').run(newId)
+    await pruneStreamTorrents()
+    throw new Error('Playback moved on, so the upload was left as it is.')
+  }
+  const at = getPlayerState().timePos || timePos
+
+  // The new upload takes over the episode: its watch state, resume position (kept
+  // even if another start cancels this one), and its place in a followed series.
   db.prepare(
-    `UPDATE episodes SET episode_num = ?,
+    `UPDATE episodes SET episode_num = ?, position_sec = ?,
        watched = (SELECT watched FROM episodes WHERE torrent_id = ? AND file_index = ?)
      WHERE torrent_id = ? AND file_index = ?`
-  ).run(episode, torrentId, fileIndex, newId, video.index)
+  ).run(episode, at, torrentId, fileIndex, newId, video.index)
   db.prepare(
     `UPDATE releases SET nyaa_id = ?, title = ?, torrent_url = ?, info_hash = ?, size_bytes = ?, published_at = ?, seeders = ?
      WHERE info_hash = ?`
@@ -97,11 +108,7 @@ async function switchRelease(): Promise<string> {
     db.prepare('DELETE FROM episodes WHERE torrent_id = ? AND file_index = ?').run(torrentId, fileIndex)
   }
 
-  if (!stillPlaying()) {
-    await pruneStreamTorrents()
-    throw new Error('Playback moved on, so the upload was left as it is.')
-  }
-  await play(newId, video.index, getPlayerState().timePos || timePos, true)
+  await play(newId, video.index, at, true)
   await pruneStreamTorrents()
   return best.title
 }

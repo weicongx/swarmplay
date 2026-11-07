@@ -22,8 +22,8 @@ const loaded = () =>
     return s.open && s.duration && !s.buffering ? s : null
   }, 120000, 200)
 
-// The database is shared with the installed app, so test data lives only in
-// folders named "ZZ …", which cleanup.js deletes with their files.
+// relaunch.ps1 runs the app on its own test profile; test data still lives only
+// in folders named "ZZ …", which cleanup.js deletes with their files.
 const TEST_FOLDER = 'ZZ Stream Test'
 const TEST_QUERY = 'overgeared judas 1080p'
 
