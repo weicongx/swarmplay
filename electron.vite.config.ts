@@ -15,6 +15,15 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
-    resolve: { alias: shared }
+    resolve: { alias: shared },
+    build: {
+      rollupOptions: {
+        // The app window, and the phone companion's page (served by src/main/companion/server.ts).
+        input: {
+          index: resolve('src/renderer/index.html'),
+          companion: resolve('src/renderer/companion.html')
+        }
+      }
+    }
   }
 })

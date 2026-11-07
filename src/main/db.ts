@@ -123,6 +123,19 @@ const MIGRATIONS: string[] = [
   `
   -- JSON: the audio and subtitle tracks last picked for the series (TrackPrefs in player.ts).
   ALTER TABLE folders ADD COLUMN track_prefs TEXT;
+  `,
+  `
+  -- Phones paired with the companion. Only the SHA-256 of a phone's cookie is
+  -- kept; url_key signs its video URLs, so removing the row ends both at once.
+  CREATE TABLE devices (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    url_key      BLOB NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER,
+    last_ip      TEXT
+  );
   `
 ]
 
@@ -268,7 +281,9 @@ function defaultSettings(): Settings {
     autoSkip: 'off',
     autoTryAnother: false,
     autoUpdateCheck: true,
-    streamCacheGB: 0
+    streamCacheGB: 0,
+    companionEnabled: false,
+    companionPort: 47800
   }
 }
 

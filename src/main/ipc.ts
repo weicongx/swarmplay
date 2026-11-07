@@ -43,9 +43,20 @@ import {
   suggestFolder,
   torrentsOnlyIn
 } from './library'
+import { activePlayback } from './playback'
 import { searchAniList } from './anilist'
 import { tryAnotherRelease } from './alternatives'
 import { checkFollow, downloadRelease, followSeries, streamRelease, unfollow } from './follows'
+import {
+  cancelPhonePairing,
+  companionStatus,
+  pairPhone,
+  removeAllPhones,
+  removePhone,
+  setCompanionEnabled,
+  setCompanionPort,
+  stopPhone
+} from './companion'
 
 /** Only the app's own page may call in; the window never navigates elsewhere, but check anyway. */
 function trusted(e: IpcMainEvent | IpcMainInvokeEvent): boolean {
@@ -63,10 +74,9 @@ function handle(channel: string, fn: (e: IpcMainInvokeEvent, ...args: any[]) => 
   })
 }
 
-/** The player is playing an episode of this torrent. */
+/** An episode of this torrent is playing, on the PC or a phone. */
 function playingFrom(torrentId: number): boolean {
-  const s = getPlayerState()
-  return s.open && s.torrentId === torrentId
+  return activePlayback()?.torrentId === torrentId
 }
 
 export function registerIpc(): void {
@@ -83,7 +93,9 @@ export function registerIpc(): void {
   handle('search:recent', () => getRecentSearches())
   handle('settings:get', () => getSettings())
   handle('settings:set', (_e, patch: Partial<Settings>) => {
-    const settings = setSettings(patch)
+    // Only the companion's own calls turn it on or change its port, since that starts or stops its server.
+    const { companionEnabled: _on, companionPort: _port, ...rest } = patch
+    const settings = setSettings(rest)
     applyLimits()
     if ('streamCacheGB' in patch) void trimStreamCache()
     return settings
@@ -134,8 +146,8 @@ export function registerIpc(): void {
     // mpv has to let go of the file before it can be deleted. Deleting a download
     // also restarts its torrent, which cuts off a stream of another of its episodes.
     const src = episodeSource(id)
-    const s = getPlayerState()
-    if (s.open && s.torrentId === src.torrentId && (s.fileIndex === src.fileIndex || (!s.local && isKept(src.torrentId, src.fileIndex)))) {
+    const a = activePlayback()
+    if (a && a.torrentId === src.torrentId && (a.fileIndex === src.fileIndex || (!a.local && isKept(src.torrentId, src.fileIndex)))) {
       closeIfPlaying(src.torrentId)
     }
     return deleteEpisode(id, remove === true)
@@ -156,6 +168,15 @@ export function registerIpc(): void {
   )
   handle('player:info', async () => ({ mpvPath: findMpv(), nvidia: await hasNvidiaGpu() }))
   handle('app:version', () => app.getVersion())
+
+  handle('companion:get', () => companionStatus())
+  handle('companion:setEnabled', (_e, on: boolean) => setCompanionEnabled(on === true))
+  handle('companion:setPort', (_e, port: number) => setCompanionPort(Number(port)))
+  handle('companion:pair', () => pairPhone())
+  handle('companion:cancelPair', () => cancelPhonePairing())
+  handle('companion:removeDevice', (_e, id: number) => removePhone(Number(id)))
+  handle('companion:removeAll', () => removeAllPhones())
+  handle('companion:stop', () => stopPhone())
   handle('dialog:pickMpv', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const result = await dialog.showOpenDialog(win!, {

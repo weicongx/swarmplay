@@ -12,6 +12,7 @@ import { autoLinkAll, describeEpisode } from './library'
 import { onNewEpisodes, startFollowChecks } from './follows'
 import { endStream, initTorrents, onFileComplete, shutdownTorrents } from './torrent'
 import { attachPlayerWindow, stopPlayer } from './player'
+import { initCompanion, stopCompanion } from './companion'
 
 // The in-app player is mpv drawing into a child window. Chromium's DirectComposition
 // layers the page above child windows, which hides the video (audio still plays).
@@ -123,6 +124,7 @@ if (!app.requestSingleInstanceLock()) {
       app.quit()
     })
     initTorrents().catch((err) => console.error('Failed to resume torrents:', err))
+    initCompanion().catch((err) => console.error('Failed to start the phone companion:', err))
     // Fetch covers for folders that have none yet, after startup settles.
     setTimeout(() => autoLinkAll().catch(() => {}), 5_000)
 
@@ -164,6 +166,7 @@ app.on('will-quit', (e) => {
   if (cleanedUp) return
   cleanedUp = true
   e.preventDefault()
+  stopCompanion()
   stopPlayer()
   const timeout = new Promise<void>((r) => setTimeout(r, 5_000))
   Promise.race([endStream(), timeout])

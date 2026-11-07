@@ -1,5 +1,7 @@
 // Renders the app icon to resources/icon.png (256px), resources/icon.ico (16–256px,
-// used for the window and taskbar on Windows) and resources/tray.png (32px).
+// used for the window and taskbar on Windows) and resources/tray.png (32px), plus the
+// phone companion page's icons in src/renderer/public: apple-touch-icon.png (180px,
+// square, since iOS rounds the corners itself) and icon-192.png / icon-512.png.
 // No image tools needed: shapes are rasterized with 4x supersampling and written as PNG.
 //   node scripts/make-icon.mjs
 import { writeFileSync, mkdirSync } from 'node:fs'
@@ -7,13 +9,14 @@ import { deflateSync } from 'node:zlib'
 
 const SS = 4
 
-function render(size) {
+/** `square`: fill the whole image, for icons the system masks itself. */
+function render(size, square = false) {
   const n = size * SS
   const px = new Float64Array(size * size * 4)
   // Terracotta, matching the app's accent (#d97757): lighter top-left to deeper bottom-right.
   const top = [0xe8, 0x93, 0x73]
   const bottom = [0xb8, 0x58, 0x3a]
-  const r = 0.22 // corner radius (fraction of size)
+  const r = square ? 0 : 0.22 // corner radius (fraction of size)
 
   // Play triangle and three trailing "swarm" dots, in unit coordinates.
   const tri = [
@@ -126,4 +129,8 @@ mkdirSync('resources', { recursive: true })
 writeFileSync('resources/icon.png', render(256))
 writeFileSync('resources/icon.ico', ico([16, 24, 32, 48, 64, 128, 256].map((size) => ({ size, data: render(size) }))))
 writeFileSync('resources/tray.png', render(32))
-console.log('wrote resources/icon.png, resources/icon.ico and resources/tray.png')
+mkdirSync('src/renderer/public', { recursive: true })
+writeFileSync('src/renderer/public/apple-touch-icon.png', render(180, true))
+writeFileSync('src/renderer/public/icon-192.png', render(192))
+writeFileSync('src/renderer/public/icon-512.png', render(512))
+console.log('wrote resources/icon.png, resources/icon.ico, resources/tray.png and the phone icons in src/renderer/public')

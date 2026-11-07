@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import type { CompanionStatus } from '@shared/companion'
 import type { AppApi, PlayerState, TorrentStatusInfo, UpdateStatus } from '@shared/types'
 
 const api: AppApi = {
@@ -71,6 +72,20 @@ const api: AppApi = {
     const listener = (_e: IpcRendererEvent, list: TorrentStatusInfo[]): void => cb(list)
     ipcRenderer.on('torrents:update', listener)
     return () => ipcRenderer.removeListener('torrents:update', listener)
+  },
+
+  getCompanion: () => ipcRenderer.invoke('companion:get'),
+  setCompanionEnabled: (on) => ipcRenderer.invoke('companion:setEnabled', on),
+  setCompanionPort: (port) => ipcRenderer.invoke('companion:setPort', port),
+  pairPhone: () => ipcRenderer.invoke('companion:pair'),
+  cancelPairing: () => ipcRenderer.invoke('companion:cancelPair'),
+  removePhone: (id) => ipcRenderer.invoke('companion:removeDevice', id),
+  removeAllPhones: () => ipcRenderer.invoke('companion:removeAll'),
+  stopPhone: () => ipcRenderer.invoke('companion:stop'),
+  onCompanionUpdate: (cb) => {
+    const listener = (_e: IpcRendererEvent, status: CompanionStatus): void => cb(status)
+    ipcRenderer.on('companion:update', listener)
+    return () => ipcRenderer.removeListener('companion:update', listener)
   }
 }
 

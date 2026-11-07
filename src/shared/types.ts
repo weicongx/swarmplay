@@ -1,5 +1,7 @@
 // Types shared by the main process, preload bridge, and renderer.
 
+import type { CompanionPairing, CompanionStatus } from './companion'
+
 export const NYAA_CATEGORIES = [
   { id: '1_0', label: 'All anime' },
   { id: '1_2', label: 'English-translated' },
@@ -233,6 +235,9 @@ export interface Settings {
   autoUpdateCheck: boolean
   /** Keep this many GB of recently streamed episodes for replay; 0 deletes each stream when it ends */
   streamCacheGB: number
+  /** Serve the phone companion page to paired phones. Changed only through the companion's own calls. */
+  companionEnabled: boolean
+  companionPort: number
 }
 
 export interface UpdateStatus {
@@ -443,4 +448,20 @@ export interface AppApi {
   onNavigate(cb: (to: { page: 'library' | 'settings'; folderId: number | null }) => void): () => void
   /** Called about once a second with every torrent's status. Returns an unsubscribe function. */
   onTorrentsUpdate(cb: (torrents: TorrentStatusInfo[]) => void): () => void
+
+  // The phone companion
+  getCompanion(): Promise<CompanionStatus>
+  /** Starts or stops its server; a busy port comes back as `error`, with it left off. */
+  setCompanionEnabled(on: boolean): Promise<CompanionStatus>
+  setCompanionPort(port: number): Promise<CompanionStatus>
+  /** A new one-time code, valid for 5 minutes, with a QR code for each address */
+  pairPhone(): Promise<CompanionPairing>
+  cancelPairing(): Promise<void>
+  /** Its cookie and video links stop working at once, and its playback ends. */
+  removePhone(id: number): Promise<void>
+  removeAllPhones(): Promise<void>
+  /** Stop what a phone is playing */
+  stopPhone(): Promise<void>
+  /** Called when the companion's status, devices or phone playback change */
+  onCompanionUpdate(cb: (status: CompanionStatus) => void): () => void
 }

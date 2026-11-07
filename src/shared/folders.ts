@@ -46,9 +46,35 @@ export function flattenFolders(folders: FolderInfo[]): { folder: FolderInfo; dep
 }
 
 /** Episode number first; unnumbered episodes go last, by file name. */
-export function compareEpisodes(a: EpisodeInfo, b: EpisodeInfo): number {
+export function compareEpisodes(
+  a: Pick<EpisodeInfo, 'episodeNum' | 'title'>,
+  b: Pick<EpisodeInfo, 'episodeNum' | 'title'>
+): number {
   const an = a.episodeNum ?? Infinity
   const bn = b.episodeNum ?? Infinity
   if (an !== bn) return an - bn
   return a.title.localeCompare(b.title, undefined, { numeric: true })
+}
+
+/**
+ * Episodes to pick up again, newest first: the latest played in each folder, or,
+ * once that one is watched, the next unwatched episode after it.
+ */
+export function continueWatching(episodes: EpisodeInfo[], limit = 8): { ep: EpisodeInfo; playedAt: number }[] {
+  const latest = new Map<number | null, EpisodeInfo>()
+  for (const e of episodes) {
+    if (e.lastPlayedAt == null) continue
+    const cur = latest.get(e.folderId)
+    if (!cur || e.lastPlayedAt > cur.lastPlayedAt!) latest.set(e.folderId, e)
+  }
+  const out: { ep: EpisodeInfo; playedAt: number }[] = []
+  for (const [folderId, last] of latest) {
+    let ep: EpisodeInfo | undefined = last
+    if (last.watched) {
+      const eps = episodes.filter((e) => e.folderId === folderId).sort(compareEpisodes)
+      ep = eps.slice(eps.indexOf(last) + 1).find((e) => !e.watched)
+    }
+    if (ep) out.push({ ep, playedAt: last.lastPlayedAt! })
+  }
+  return out.sort((a, b) => b.playedAt - a.playedAt).slice(0, limit)
 }

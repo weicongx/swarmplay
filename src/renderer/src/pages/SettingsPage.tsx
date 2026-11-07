@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings, type UpdateStatus, type Upscaler } from '@shared/types'
 import { errorMessage, formatBytes, UPSCALERS } from '../format'
+import PhoneSettings from './PhoneSettings'
 
 export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -240,6 +241,8 @@ export default function SettingsPage(): JSX.Element {
           onSave={(v) => update({ uploadLimitKiB: v })}
         />
       </div>
+
+      <PhoneSettings />
 
       <Updates
         auto={settings.autoUpdateCheck}

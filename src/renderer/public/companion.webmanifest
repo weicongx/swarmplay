@@ -1,0 +1,14 @@
+{
+  "name": "Swarmplay",
+  "short_name": "Swarmplay",
+  "description": "Watch your Swarmplay library on your phone, through your PC.",
+  "start_url": "/#library",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#181818",
+  "theme_color": "#181818",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -27,6 +27,7 @@ A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a 
 - **AniList.** Folders link to their AniList entry for the cover, alternate titles and episode count. An English-titled release still finds the folder you named in romaji. *Continue watching* sits at the top of the library.
 - **Updates itself.** Swarmplay checks GitHub for a new version when it starts and every six hours. When there is one, the sidebar shows **Update to X**, and **Install and restart** in Settings downloads it, checks it against GitHub's checksum, and installs it over the current version, keeping your library and settings.
 - **Background downloads.** Downloads keep going from the tray when you close the window. Swarmplay notifies you when an episode finishes, and seeds afterwards if you want.
+- **Watch on your phone.** Turn on **Let my phone use Swarmplay** in Settings and pair a phone by scanning a QR code. The phone gets a small page from the PC to browse the library, pick up where you left off, search nyaa and follow a series. **Play** there opens the episode in VLC, streamed through the PC, which does the torrenting as usual. It works on your Wi-Fi, or from anywhere with [Tailscale](https://tailscale.com) on both. One thing plays at a time: Play on the PC takes over from the phone, and Play on the phone takes over from the PC.
 
 ## Install
 
@@ -72,6 +73,7 @@ Running from source uses the installed app's database and library unless you set
 3. **Downloads** shows progress, speed and peers for each download, with pause, resume and remove. Remove keeps the episodes in the library to stream, and can also delete the files. While you stream, the stream shows here too. The badge on **Downloads** counts only downloads still fetching, so streaming never adds to it. The download an episode is playing from can't be paused until you stop playback, since pausing would cut the episode off; **Pause all** in the tray skips it. Removing it, or deleting a folder with its downloads, stops playback first.
 4. **Add series to library** (in the same panel) follows the series instead of picking one episode. Its new episodes show up in the folder with **Stream** and **Download**, and **Remove** hides one you don't want. Each one shows its seeders as of the last check, with ⚠ at two or fewer. **Unfollow** in the folder header stops it and removes the episodes you never downloaded.
 5. **Library** holds your series folders. Click an episode to play it. To browse while it plays, press **Mini player** or click Search, Downloads, Library or Settings in the sidebar. The video keeps playing in a corner; click it, or **Now streaming** in the sidebar, to go back. Each episode shows whether it's downloaded, with **Download** and **Delete**. Use **Find on AniList** when a folder didn't get a cover automatically.
+6. **Phone.** Install VLC on the phone (free on the App Store). In **Settings → Phone**, turn on **Let my phone use Swarmplay**. Windows Firewall has to let the phone in: Windows marks each network Private or Public, and home Wi-Fi is often marked Public. Set yours to Private (Windows Settings → Network & internet → Wi-Fi → your network's properties), and allow Swarmplay on Private networks only (Windows Security → Firewall & network protection → Allow an app through firewall). Press **Pair a phone** and scan the QR code with the phone's camera, or open the address shown and type the code. On the phone, tap an episode's **Play**, then **Open in VLC**. When the episode ends, switch back to Safari: the page offers the next one. While the phone plays, the sidebar and the tray show it, with **Stop**. To use it away from home, install Tailscale on the PC and the phone and pair with the Tailscale address, which works at home too. Each phone is listed in Settings with **Remove**, which locks it out at once.
 
 ### Player keys
 
@@ -103,6 +105,7 @@ Running from source uses the installed app's database and library unless you set
 - Download notifications
 - Upscaling mode
 - mpv path
+- Phone: let a paired phone use Swarmplay (off by default), its port (47800), pairing, and the list of paired phones
 
 ## Upscaling
 
@@ -147,6 +150,16 @@ nyaa.si search ──► result list ──► .torrent ──► WebTorrent ─
   - AniList responses are cached for a week, and requests are throttled under its limit of 30 per minute.
   - A followed series' episodes keep the seeder count from nyaa's RSS feed (`nyaa:seeders`) as of the last check. That's the only count there is before a torrent starts, so it can be up to 30 minutes old.
   - Moving episodes between folders changes the library only, not the files on disk, because one batch torrent can feed several folders.
+- **Phone companion.**
+  - While it's on, a plain `node:http` server listens on port 47800 (changeable). It serves the phone page, which is a second renderer entry (`companion.html`), a short JSON API, covers and the video bytes. The API is an allowlist: the library, Play, Next, Stop, marking watched, search, a torrent's file list and following a series. Nothing else from the app's IPC is reachable, so a phone can't change settings, touch files, install updates or remove torrents.
+  - Pairing uses an 8-character code that works once, for 5 minutes, and only the newest one works. Five wrong tries void it, and past 20 tries in 10 minutes every try is refused until the window moves on. A paired phone gets an `HttpOnly`, `SameSite=Strict` cookie, of which the PC stores only a SHA-256. A phone unused for 90 days is dropped at startup.
+  - The server listens on IPv6 as well as IPv4. When the page was opened at a Tailscale IPv4 address, VLC's link uses the PC's Tailscale IPv6 address instead. On an IPv6-only mobile network such as T-Mobile's, iOS converts an IPv4 address that VLC opens into a NAT64 address, so VLC's connection goes out over the carrier instead of through Tailscale, and hangs. Safari isn't affected, and IPv6 addresses are never converted.
+  - VLC sends no cookies, so a video's URL carries its own credential: `/v/<phone>.<torrent>.<file>.<HMAC>/<file name>`, signed with a key per phone. Each phone has one stable URL per episode, and removing the phone makes them all fail.
+  - Every request must name the PC by an IP address, its own name, `.local`, `.home.arpa` or `.ts.net` in `Host`, so a web page whose domain is pointed at the PC (DNS rebinding) gets nothing. POSTs need an `X-Swarmplay` header and a matching `Origin`, and there are no CORS headers, so other sites can't call the API from the phone's browser. Covers are fetched by the PC, so the phone never contacts AniList.
+  - The phone plays the same stream the PC would: `preparePlayback` readies the file, and the server proxies WebTorrent's ranges (or reads the downloaded file). Ownership lives in `playback.ts`, so only one thing plays at a time and Play anywhere takes over. While the phone plays, the PC stays awake.
+  - VLC doesn't report its position, so the PC estimates it from how far VLC has read and saves it every 5 seconds, as it does for mpv: past 90% the episode counts as watched. The duration comes from an earlier play on the PC or from the mkv header. VLC starts each episode from the beginning, so the page shows where you stopped last time.
+  - VLC turns on the subtitles a file marks as default, and many releases mark none. So in the mkv header VLC gets, the PC marks the series' audio and subtitles from the PC player as the defaults. A series never set on the PC gets full subtitles in the PC's language, unless the audio is already in it. Only one-byte flags change (and the header's CRC-32, if it has one), so the file keeps its length, and the copy on disk is untouched.
+  - The session ends 3 minutes after VLC closes its last connection, or 30 minutes after it stops reading (paused, phone put away). A stream is then cleaned up as on the PC. VLC reconnects by itself, which picks a session that ended this way back up. After **Stop**, or the PC taking over, its reconnects are refused until Play on the page, so VLC stops once it has played what it already buffered.
 - **Updates.** The app reads the latest release from the GitHub API (`weicongx/swarmplay`) and compares its tag with the running version. Installing downloads the `Swarmplay-Setup-<version>.exe` asset to the temp folder, verifies its SHA-256 against the digest GitHub lists for it, and runs it with `/S --force-run`: the NSIS installer installs silently into the existing location and starts the new version once the app has quit. Running from source, `SWARMPLAY_UPDATE_FROM=1.2.0` pretends to be an older version; the download and check then run, but not the installer.
 - **Safety.**
   - A torrent's file paths come from whoever made it. One whose path would leave the save folder (`..`, a drive letter, a backslash or another character Windows reserves in a folder name) is refused before anything is written. Opening, moving and deleting files also check that the path is inside the torrent's folder.
@@ -169,6 +182,8 @@ src/
     torrentFile.ts   .torrent parsing (file list, path safety)
     torrent.ts       WebTorrent engine, stream server, pause/resume
     player.ts        embedded mpv: window, IPC, resume, upscaling
+    playback.ts      one playback at a time, on the PC or a phone
+    companion/       phone companion: server, pairing, devices, phone playback, mkv duration
     library.ts       folders, episodes, auto-filing, next episode
     follows.ts       followed series: matching uploads, 30-minute checks
     alternatives.ts  switching a slow stream to another upload of the episode
@@ -180,11 +195,11 @@ src/
     ipc.ts           IPC handlers
   preload/         window.api bridge
   shared/          types and folder-name helpers used by both sides
-  renderer/        React UI (Search, Downloads, Library, Player, Settings)
+  renderer/        React UI (Search, Downloads, Library, Player, Settings), and the phone page (companion.html)
 resources/         icons and Anime4K shaders
 scripts/           icon generator, mpv vendoring for the installer
   cdp/             behavior checks run in the app over the DevTools Protocol (see its README)
-licenses/          license notice for the bundled mpv
+licenses/          license notices for the bundled mpv and qrcode-generator
 ```
 
 ## Notes and limitations
@@ -194,6 +209,7 @@ licenses/          license notice for the bundled mpv
 - When running from source, the taskbar icon and the notification sender show as Electron. The installed app shows Swarmplay's name and icon. Source runs use a separate app ID (`com.weicongx.swarmplay.dev`) so that Windows' per-ID icon cache doesn't mix up the two.
 - The development and installed builds share the same database.
 - **Privacy.** Like any BitTorrent client, Swarmplay shows your IP address to the trackers and peers of every torrent you stream or download, and they can see what you fetch. Seeder counts are scraped from nyaa's tracker over plain HTTP, which shows the info-hashes looked up to anyone on the network path. Use a VPN that allows torrent traffic if that matters to you. Swarmplay sends nothing else about you: no accounts, telemetry or analytics. It contacts nyaa, its trackers and peers, AniList for metadata, and the GitHub API for update checks.
+- **Phone on the home network.** The phone talks to the PC over plain HTTP. Someone else on your Wi-Fi could see what you watch, and could copy a phone's cookie or video links. Through Tailscale the connection is encrypted. If a phone is lost, or you're unsure, **Remove** it in Settings: its cookie and links stop working at once.
 - The UI colors are sampled from the Claude desktop app's dark theme.
 
 ## Credits
@@ -202,6 +218,7 @@ licenses/          license notice for the bundled mpv
 - [mpv](https://mpv.io) for playback. The installer bundles the [shinchiro](https://github.com/shinchiro/mpv-winbuild-cmake) Windows build, under the GPL v3; see `licenses/` for the license and source links.
 - [Anime4K](https://github.com/bloc97/Anime4K) by bloc97 for the upscaling shaders (MIT license, included in `resources/shaders/anime4k/LICENSE`)
 - [anitomy](https://www.npmjs.com/package/anitomy) for release-name parsing
+- [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) by Kazuhiko Arase for the pairing QR codes (MIT license, see `licenses/`)
 - [AniList](https://anilist.co) for series metadata and cover art
 - [Electron](https://www.electronjs.org), [electron-vite](https://electron-vite.org) and [React](https://react.dev)
 

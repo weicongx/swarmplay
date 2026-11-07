@@ -4,6 +4,7 @@ import { VIDEO_EXT, type NyaaResult } from '@shared/types'
 import { getDb, getSettings } from './db'
 import { folderTitles, resolveFolder } from './library'
 import { getTorrentInfo, searchNyaa } from './nyaa'
+import { activePlayback } from './playback'
 import { getPlayerState, play } from './player'
 import { parseRelease } from './release'
 import { addStream, isKept, pruneStreamTorrents, torrentIdentity } from './torrent'
@@ -72,10 +73,11 @@ async function switchRelease(): Promise<string> {
     videos.length === 1 ? videos[0] : videos.find((f) => parseRelease(basename(f.path)).episode === episode)
   if (!video) throw new Error(`Couldn't find episode ${episode} in ${best.title}.`)
 
-  // The search takes a while; if playback stopped or moved on meanwhile, leave it be.
+  // The search takes a while; if playback stopped or moved on meanwhile (a phone
+  // taking over included), leave it be.
   const stillPlaying = (): boolean => {
-    const now = getPlayerState()
-    return now.open && now.torrentId === torrentId && now.fileIndex === fileIndex
+    const now = activePlayback()
+    return now?.owner.kind === 'pc' && now.torrentId === torrentId && now.fileIndex === fileIndex
   }
   if (!stillPlaying()) throw new Error('Playback moved on, so the upload was left as it is.')
 

@@ -13,6 +13,7 @@ import {
 } from '@shared/types'
 import { getDb, getSettings, setSettings } from './db'
 import { addRelease, describeEpisode, nextEpisode } from './library'
+import { activePlayback, registerPlayer, stopIfPlayingFrom, takeOver } from './playback'
 import { endStream, fetchedRanges, prefetch, preparePlayback, streamStats, type PlaybackTarget } from './torrent'
 
 // One mpv instance is reused for every episode, driven over its JSON IPC pipe.
@@ -21,12 +22,12 @@ import { endStream, fetchedRanges, prefetch, preparePlayback, streamStats, type 
 // handles every codec and subtitle format. The host ignores the mouse, so
 // clicks and keys go to the page underneath, which sends commands here.
 const PIPE = `\\\\.\\pipe\\swarmplay-mpv-${process.pid}`
-const SAVE_EVERY_MS = 5_000
+export const SAVE_EVERY_MS = 5_000
 const BROADCAST_EVERY_MS = 250
 /** Past this fraction of the runtime an episode counts as watched. */
-const WATCHED_AT = 0.9
+export const WATCHED_AT = 0.9
 /** Past this fraction of the runtime, or once the ending starts, the next episode starts loading... */
-const PREFETCH_AT = 0.85
+export const PREFETCH_AT = 0.85
 /** ...as long as this much of the current one is buffered, so the two don't compete. */
 const PREFETCH_BUFFERED_SEC = 30
 
@@ -67,12 +68,12 @@ interface NowPlaying {
 }
 
 /** A track as remembered for a series: matched by language, then by name, in its other episodes. */
-interface TrackPick {
+export interface TrackPick {
   lang: string | null
   title: string | null
 }
 
-interface TrackPrefs {
+export interface TrackPrefs {
   audio?: TrackPick
   /** null: subtitles off */
   sub?: TrackPick | null
@@ -115,6 +116,21 @@ let broadcastTimer: NodeJS.Timeout | null = null
  * or for a release to be added) gives up if another start or a close came meanwhile.
  */
 let playSeq = 0
+
+// The PC's player is playing once mpv has the file; a start still on its way is
+// cancelled by bumping playSeq. Taken over by a phone, it leaves the stream to
+// the phone's start.
+registerPlayer({
+  kind: 'pc',
+  current: () =>
+    state.open && state.torrentId != null && state.fileIndex != null
+      ? { owner: { kind: 'pc' }, torrentId: state.torrentId, fileIndex: state.fileIndex, local: state.local }
+      : null,
+  stop: (reason) => {
+    if (state.open) closePlayer(reason !== 'takeover')
+    else playSeq++
+  }
+})
 
 function blankState(): PlayerState {
   return {
@@ -198,6 +214,8 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
     )
   }
 
+  // Playing here stops a phone, or a phone's start.
+  takeOver('pc')
   const seq = ++playSeq
   const target = await preparePlayback(torrentId, fileIndex)
   if (seq !== playSeq) return
@@ -321,20 +339,21 @@ export function stopPlayer(): void {
   proc?.kill()
 }
 
-/** Stop playback if it's from this torrent, e.g. before deleting its files. */
+/** Stop playback if it's from this torrent, e.g. before deleting its files: on the PC or a phone. */
 export function closeIfPlaying(torrentId: number): void {
-  if (state.open && state.torrentId === torrentId) closePlayer()
+  stopIfPlayingFrom(torrentId)
 }
 
 // ---------------------------------------------------------------------------
 
-function closePlayer(): void {
+/** `releaseStream` false: another player is taking over, and its start deals with the stream. */
+function closePlayer(releaseStream = true): void {
   playSeq++
   saveCurrent()
   current = null
   command('stop')
   // Streamed data is deleted once mpv lets go of it (the delete retries if it's still busy).
-  endStream().catch((err) => console.error('Failed to clean up a stream:', err))
+  if (releaseStream) endStream().catch((err) => console.error('Failed to clean up a stream:', err))
   if (mainWin?.isFullScreen()) mainWin.setFullScreen(false)
   setState({ ...blankState(), volume: state.volume, muted: state.muted, upscaler: state.upscaler })
   placeHost()
@@ -559,7 +578,7 @@ function placeHost(): void {
 }
 
 /** Create or update the episode row and return where playback should start. */
-function rememberEpisode(torrentId: number, fileIndex: number, target: PlaybackTarget): number {
+export function rememberEpisode(torrentId: number, fileIndex: number, target: PlaybackTarget): number {
   getDb()
     .prepare(
       `INSERT INTO episodes (torrent_id, file_index, title, file_path, size_bytes, last_played_at)
@@ -583,6 +602,12 @@ function rememberEpisode(torrentId: number, fileIndex: number, target: PlaybackT
 function saveCurrent(): void {
   if (!current?.loaded) return
   const { torrentId, fileIndex, pos, duration } = current
+  savePosition(torrentId, fileIndex, pos, duration)
+  current.lastSaved = Date.now()
+}
+
+/** Save where an episode got to; past WATCHED_AT it counts as watched and starts over next time. */
+export function savePosition(torrentId: number, fileIndex: number, pos: number, duration: number | null): void {
   const watched = duration != null && duration > 0 && pos >= duration * WATCHED_AT
   getDb()
     .prepare(
@@ -590,7 +615,6 @@ function saveCurrent(): void {
        WHERE torrent_id = ? AND file_index = ?`
     )
     .run(watched ? 0 : pos, duration, watched ? 1 : 0, torrentId, fileIndex)
-  current.lastSaved = Date.now()
 }
 
 async function ensureMpv(mpvPath: string): Promise<void> {
@@ -627,7 +651,8 @@ async function ensureMpv(mpvPath: string): Promise<void> {
     current = null
     if (state.open) setState({ ...blankState(), error: null })
     placeHost()
-    endStream().catch(() => {})
+    // mpv quitting while idle must not cut off a phone's stream.
+    if (activePlayback()?.owner.kind !== 'phone') endStream().catch(() => {})
   })
 
   sock = await connectWithRetry()
@@ -791,7 +816,8 @@ function onMessage(msg: MpvMessage): void {
   }
 }
 
-function readTrackPrefs(folderId: number): TrackPrefs {
+/** The series' remembered tracks; the phone companion starts VLC with them too. */
+export function readTrackPrefs(folderId: number): TrackPrefs {
   const row = getDb().prepare('SELECT track_prefs FROM folders WHERE id = ?').get(folderId) as
     | { track_prefs: string | null }
     | undefined

@@ -1,6 +1,8 @@
 import { Menu, Tray, nativeImage } from 'electron'
 import trayIcon from '../../resources/tray.png?asset'
-import { getPlayerState } from './player'
+import { sessionTitle } from '@shared/companion'
+import { phonePlayback, stopPhone } from './companion'
+import { activePlayback } from './playback'
 import { pauseAll, recentTorrents, resumeAll } from './torrent'
 
 let tray: Tray | null = null
@@ -26,16 +28,26 @@ export function createTray(onShow: () => void, onQuit: () => void): void {
       paused > 0 && `${paused} paused`
     ].filter(Boolean)
     const status = parts.length ? parts.join(' · ') : 'Nothing downloading'
-    tray.setToolTip(`Swarmplay\n${status}`)
+    const phone = phonePlayback()
+    const streaming = phone && `Streaming to ${phone.deviceName}: ${sessionTitle(phone)}`
+    // Windows cuts tooltips off at 127 characters.
+    tray.setToolTip(`Swarmplay\n${streaming ? `${clip(streaming, 70)}\n` : ''}${status}`.slice(0, 127))
 
     // Only rebuild the menu when what it offers changes, not every second.
-    const key = `${downloading.length > 0}|${paused > 0}|${status.replace(/↓ .*?\/s/, '')}`
+    const key = `${downloading.length > 0}|${paused > 0}|${status.replace(/↓ .*?\/s/, '')}|${streaming ?? ''}`
     if (key === lastMenuKey) return
     lastMenuKey = key
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: 'Open Swarmplay', click: onShow },
         { label: status, enabled: false },
+        ...(streaming
+          ? [
+              { type: 'separator' as const },
+              { label: clip(streaming, 80), enabled: false },
+              { label: 'Stop', click: () => stopPhone() }
+            ]
+          : []),
         { type: 'separator' },
         { label: 'Pause all downloads', enabled: downloading.length > 0, click: () => void pauseAll(playingTorrent()) },
         { label: 'Resume all', enabled: paused > 0, click: () => void resumeAll() },
@@ -49,10 +61,13 @@ export function createTray(onShow: () => void, onQuit: () => void): void {
   setInterval(update, 2000)
 }
 
-/** The episode playing keeps streaming: pausing its torrent would cut it off. */
+/** The episode playing (here or on a phone) keeps streaming: pausing its torrent would cut it off. */
 function playingTorrent(): number | null {
-  const s = getPlayerState()
-  return s.open ? s.torrentId : null
+  return activePlayback()?.torrentId ?? null
+}
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
 function speed(bytesPerSec: number): string {

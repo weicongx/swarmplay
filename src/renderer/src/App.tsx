@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { sessionTitle, type CompanionSessionInfo } from '@shared/companion'
 import type { PlayerState, UpdateStatus } from '@shared/types'
 import DownloadsPage from './pages/DownloadsPage'
 import LibraryPage from './pages/LibraryPage'
@@ -25,6 +26,8 @@ export default function App(): JSX.Element {
   /** The player is shrunk into a corner while the user browses */
   const [mini, setMini] = useState(false)
   const [update, setUpdate] = useState<UpdateStatus | null>(null)
+  /** What a paired phone is playing through this PC */
+  const [phone, setPhone] = useState<CompanionSessionInfo | null>(null)
   const playingKey = useRef<string | null>(null)
 
   useEffect(
@@ -53,6 +56,11 @@ export default function App(): JSX.Element {
   useEffect(() => {
     window.api.getPlayerState().then(setPlayer)
     return window.api.onPlayerState(setPlayer)
+  }, [])
+
+  useEffect(() => {
+    window.api.getCompanion().then((s) => setPhone(s.session))
+    return window.api.onCompanionUpdate((s) => setPhone(s.session))
   }, [])
 
   // An episode the user starts opens the full player; autoplay and release switches keep the view.
@@ -98,6 +106,7 @@ export default function App(): JSX.Element {
           </button>
         )}
         {playing && <NowStreaming state={player} onOpen={mini ? () => setMini(false) : undefined} />}
+        {!playing && phone && <PhoneStreaming session={phone} />}
       </nav>
       <main className="content">
         {/* Search stays mounted so results survive switching tabs. */}
@@ -143,6 +152,25 @@ function NowStreaming({ state, onOpen }: { state: PlayerState; onOpen?: () => vo
           {state.buffering && ' · buffering'}
         </div>
       )}
+    </div>
+  )
+}
+
+/** A phone playing through this PC: the PC plays nothing meanwhile, and Stop ends it. */
+function PhoneStreaming({ session }: { session: CompanionSessionInfo }): JSX.Element {
+  return (
+    <div className="now-streaming phone" title={`Playing on ${session.deviceName}: ${session.title}`}>
+      <div className="now-label">Playing on {session.deviceName}</div>
+      <div className="now-title">{session.series ?? session.title}</div>
+      {session.episodeLabel && <div className="now-episode">{session.episodeLabel}</div>}
+      {session.starting && <div className="now-stats">Getting it ready…</div>}
+      <button
+        className="now-stop"
+        onClick={() => void window.api.stopPhone()}
+        aria-label={`Stop playing ${sessionTitle(session)} on ${session.deviceName}`}
+      >
+        Stop
+      </button>
     </div>
   )
 }

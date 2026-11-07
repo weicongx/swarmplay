@@ -8,7 +8,7 @@ import {
   type DragEvent,
   type ReactNode
 } from 'react'
-import { compareEpisodes, flattenFolders, splitSeason } from '@shared/folders'
+import { compareEpisodes, continueWatching, flattenFolders, splitSeason } from '@shared/folders'
 import {
   RESUME_MIN_SEC,
   type AniListMedia,
@@ -493,25 +493,14 @@ function AniListPicker({
 
 /** Episodes to pick up again: the latest played per folder, or the next one after it. */
 function ContinueWatching({ lib, onPlay }: { lib: LibraryData; onPlay: (e: EpisodeInfo) => void }): JSX.Element | null {
-  const items = useMemo(() => {
-    const latest = new Map<number | null, EpisodeInfo>()
-    for (const e of lib.episodes) {
-      if (e.lastPlayedAt == null) continue
-      const cur = latest.get(e.folderId)
-      if (!cur || e.lastPlayedAt > cur.lastPlayedAt!) latest.set(e.folderId, e)
-    }
-    const out: { ep: EpisodeInfo; folder: FolderInfo | null; playedAt: number }[] = []
-    for (const [folderId, last] of latest) {
-      let ep: EpisodeInfo | undefined = last
-      if (last.watched) {
-        // Finished it: offer the next unwatched episode in the folder instead.
-        const eps = lib.episodes.filter((e) => e.folderId === folderId).sort(compareEpisodes)
-        ep = eps.slice(eps.indexOf(last) + 1).find((e) => !e.watched)
-      }
-      if (ep) out.push({ ep, folder: lib.folders.find((f) => f.id === folderId) ?? null, playedAt: last.lastPlayedAt! })
-    }
-    return out.sort((a, b) => b.playedAt - a.playedAt).slice(0, 8)
-  }, [lib])
+  const items = useMemo(
+    () =>
+      continueWatching(lib.episodes).map(({ ep }) => ({
+        ep,
+        folder: lib.folders.find((f) => f.id === ep.folderId) ?? null
+      })),
+    [lib]
+  )
 
   if (items.length === 0) return null
   return (
