@@ -10,7 +10,7 @@ import { firstTime, getDb, getSettings } from './db'
 import { registerIpc } from './ipc'
 import { autoLinkAll, describeEpisode } from './library'
 import { onNewEpisodes, startFollowChecks } from './follows'
-import { initTorrents, onFileComplete, shutdownTorrents } from './torrent'
+import { endStream, initTorrents, onFileComplete, shutdownTorrents } from './torrent'
 import { attachPlayerWindow, stopPlayer } from './player'
 
 // The in-app player is mpv drawing into a child window. Chromium's DirectComposition
@@ -60,6 +60,12 @@ function createWindow(): void {
     if (/^https?:\/\//.test(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
+  // The window never leaves the app's own page: a link or file dropped on it
+  // would otherwise load in place, with the app's API available to that page.
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url !== win?.webContents.getURL()) e.preventDefault()
+  })
+  win.webContents.on('will-attach-webview', (e) => e.preventDefault())
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -141,9 +147,21 @@ app.on('before-quit', () => {
   quitting = true
 })
 
-app.on('will-quit', () => {
+// Quitting mid-stream: stop mpv and delete what was streamed before exiting,
+// as stopping playback would. Startup clears anything this doesn't finish.
+let cleanedUp = false
+app.on('will-quit', (e) => {
+  if (cleanedUp) return
+  cleanedUp = true
+  e.preventDefault()
   stopPlayer()
-  shutdownTorrents()
+  const timeout = new Promise<void>((r) => setTimeout(r, 5_000))
+  Promise.race([endStream(), timeout])
+    .catch((err) => console.error('Failed to clean up a stream on quit:', err))
+    .finally(() => {
+      shutdownTorrents()
+      app.quit()
+    })
 })
 
 app.on('window-all-closed', () => {

@@ -37,20 +37,44 @@ export default function LibraryPage({ initialFolder = null }: { initialFolder?: 
 
   useEffect(() => {
     refresh()
-    const apply = (list: TorrentStatusInfo[]): void => setTorrents(new Map(list.map((t) => [t.id, t])))
+    let last = ''
+    const apply = (list: TorrentStatusInfo[]): void => {
+      setTorrents(new Map(list.map((t) => [t.id, t])))
+      // Torrent updates arrive every second, mostly with new speeds. Re-read the
+      // library only when something it shows may have changed: a torrent added or
+      // removed, a file kept, finished or let go, or a resume position or watched mark.
+      const sig = list
+        .map((t) => `${t.id}:${t.status}:${t.files.map((f) => `${+f.selected}${+(f.progress >= 1)}${Math.floor(f.positionSec)}${+f.watched}`).join(',')}`)
+        .join('|')
+      if (sig !== last && last !== '') refresh()
+      last = sig
+    }
     window.api.listTorrents().then(apply)
-    // Torrent updates arrive every second; re-read the library with them so
-    // download progress and resume positions stay current.
-    return window.api.onTorrentsUpdate((list) => {
-      apply(list)
-      refresh()
-    })
+    const off = window.api.onTorrentsUpdate(apply)
+    // Changes that no torrent shows (a new release of a followed series, say) turn up within a while,
+    // and at once when the window comes back.
+    const timer = setInterval(() => !document.hidden && refresh(), 15_000)
+    const onVisible = (): void => {
+      if (!document.hidden) refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      off()
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [refresh])
 
-  // Opening a folder brings its episodes' seeder counts up to date (the next refresh shows them).
+  // Opening a folder brings its episodes' seeder counts up to date.
   useEffect(() => {
-    if (typeof at === 'number') window.api.refreshSeeders(at).catch(() => {})
-  }, [at])
+    if (typeof at !== 'number') return
+    window.api
+      .refreshSeeders(at)
+      .then((changed) => {
+        if (changed) void refresh()
+      })
+      .catch(() => {})
+  }, [at, refresh])
 
   const run = (fn: () => Promise<unknown>): void => {
     setError(null)

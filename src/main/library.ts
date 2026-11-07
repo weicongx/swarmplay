@@ -229,21 +229,28 @@ export function renameFolder(id: number, name: string): void {
   getDb().prepare('UPDATE folders SET name = ? WHERE id = ?').run(cleanName(name), id)
 }
 
+/**
+ * The torrents deleting a folder with its downloads removes: those whose every
+ * episode lives in the folder's tree, so a batch shared with another folder keeps its files.
+ */
+export function torrentsOnlyIn(folderId: number): number[] {
+  const subtree = descendants(folderId)
+  const placeholders = subtree.map(() => '?').join(',')
+  const rows = getDb()
+    .prepare(
+      `SELECT torrent_id FROM episodes WHERE title != '' GROUP BY torrent_id
+       HAVING SUM(CASE WHEN folder_id IN (${placeholders}) THEN 0 ELSE 1 END) = 0`
+    )
+    .all(...subtree) as { torrent_id: number }[]
+  return rows.map((r) => r.torrent_id)
+}
+
 export async function deleteFolder(id: number, deleteDownloads: boolean): Promise<void> {
   mustGetFolder(id)
   const subtree = descendants(id)
 
   if (deleteDownloads) {
-    // Only remove torrents whose every episode lives in this folder tree,
-    // so a batch shared with another folder keeps its files.
-    const placeholders = subtree.map(() => '?').join(',')
-    const torrentIds = getDb()
-      .prepare(
-        `SELECT torrent_id FROM episodes WHERE title != '' GROUP BY torrent_id
-         HAVING SUM(CASE WHEN folder_id IN (${placeholders}) THEN 0 ELSE 1 END) = 0`
-      )
-      .all(...subtree) as { torrent_id: number }[]
-    for (const { torrent_id } of torrentIds) await removeTorrent(torrent_id, true)
+    for (const torrentId of torrentsOnlyIn(id)) await removeTorrent(torrentId, true)
   }
 
   // Episodes that were only streamed go with the folder; downloaded ones move to Unsorted.
@@ -453,20 +460,31 @@ export function nextEpisode(torrentId: number, fileIndex: number): NextUp | null
     .prepare('SELECT folder_id FROM episodes WHERE torrent_id = ? AND file_index = ?')
     .get(torrentId, fileIndex) as { folder_id: number | null } | undefined
   const folderId = current?.folder_id ?? null
-  const lib = getLibrary()
+  const db = getDb()
 
-  const eps = lib.episodes
-    .filter((e) => e.folderId === folderId && (folderId !== null || e.torrentId === torrentId))
-    .sort(compareEpisodes)
+  // Only this series' episodes (or, unsorted, this torrent's), not the whole library.
+  type Row = { torrent_id: number; file_index: number; episode_num: number | null; title: string }
+  const rows = (
+    folderId !== null
+      ? db.prepare("SELECT torrent_id, file_index, episode_num, title FROM episodes WHERE title != '' AND folder_id = ?").all(folderId)
+      : db
+          .prepare("SELECT torrent_id, file_index, episode_num, title FROM episodes WHERE title != '' AND folder_id IS NULL AND torrent_id = ?")
+          .all(torrentId)
+  ) as unknown as Row[]
+  const eps = rows
+    .map((r) => ({ torrentId: r.torrent_id, fileIndex: r.file_index, episodeNum: r.episode_num, title: r.title }))
+    .sort((a, b) => compareEpisodes(a as EpisodeInfo, b as EpisodeInfo))
   const i = eps.findIndex((e) => e.torrentId === torrentId && e.fileIndex === fileIndex)
   const next = i >= 0 ? eps[i + 1] : undefined
   const num = i >= 0 ? eps[i].episodeNum : null
 
   const release =
     folderId !== null && num != null
-      ? lib.available.filter((a) => a.folderId === folderId && a.episodeNum > num).sort((a, b) => a.episodeNum - b.episodeNum)[0]
+      ? (db
+          .prepare(`${AVAILABLE_SQL} AND f.folder_id = ? AND r.episode_num > ? ORDER BY r.episode_num LIMIT 1`)
+          .get(folderId, num) as unknown as { id: number; episode_num: number } | undefined)
       : undefined
-  if (release && (next?.episodeNum == null || release.episodeNum < next.episodeNum)) return { releaseId: release.id }
+  if (release && (next?.episodeNum == null || release.episode_num < next.episodeNum)) return { releaseId: release.id }
   return next ? { torrentId: next.torrentId, fileIndex: next.fileIndex } : null
 }
 

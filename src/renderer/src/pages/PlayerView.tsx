@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { PlayerCommand, PlayerState, PlayerTrack, Upscaler } from '@shared/types'
 import { errorMessage, formatClock, formatSpeed, UPSCALERS } from '../format'
 
@@ -286,36 +286,62 @@ export function MiniPlayer({ state, onExpand }: { state: PlayerState; onExpand: 
   )
 }
 
+// The bar's state outlives the bar, which remounts when the player switches
+// between full and mini: a switch in progress, a dismissal and its result carry over.
+interface SlowBar {
+  /** The title the bar was dismissed for */
+  dismissed: string | null
+  busy: boolean
+  message: { text: string; error: boolean } | null
+  /** The title the state above belongs to */
+  title: string | null
+}
+let slowBar: SlowBar = { dismissed: null, busy: false, message: null, title: null }
+const slowBarListeners = new Set<() => void>()
+let messageTimer: ReturnType<typeof setTimeout> | null = null
+
+function setSlowBar(patch: Partial<SlowBar>): void {
+  slowBar = { ...slowBar, ...patch }
+  if ('message' in patch) {
+    if (messageTimer) clearTimeout(messageTimer)
+    messageTimer = patch.message && !patch.message.error ? setTimeout(() => setSlowBar({ message: null }), 6000) : null
+  }
+  slowBarListeners.forEach((l) => l())
+}
+
+function useSlowBar(): SlowBar {
+  return useSyncExternalStore(
+    (l) => {
+      slowBarListeners.add(l)
+      return () => slowBarListeners.delete(l)
+    },
+    () => slowBar
+  )
+}
+
+async function tryAnother(auto = false): Promise<void> {
+  if (slowBar.busy) return
+  setSlowBar({ busy: true, message: null })
+  try {
+    const name = await window.api.tryAnotherRelease()
+    setSlowBar({ message: { text: `${auto ? 'The release was slow, so switched' : 'Switched'} to ${name}`, error: false } })
+  } catch (err) {
+    setSlowBar({ message: { text: errorMessage(err), error: true } })
+  } finally {
+    setSlowBar({ busy: false })
+  }
+}
+
 /** Offers another upload of the episode when this one is stuck buffering or has no peers. */
 function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
-  const [dismissed, setDismissed] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null)
+  const { dismissed, busy, message } = useSlowBar()
 
-  // A new episode (or release) starts fresh.
+  // A new episode (or release) starts fresh; a remount of the same one doesn't.
   useEffect(() => {
-    setDismissed(null)
-    if (!busy) setMessage((m) => (m?.error ? null : m))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (slowBar.title === state.title) return
+    setSlowBar({ title: state.title, dismissed: null })
+    if (!slowBar.busy && slowBar.message?.error) setSlowBar({ message: null })
   }, [state.title])
-  useEffect(() => {
-    if (!message || message.error) return
-    const t = setTimeout(() => setMessage(null), 6000)
-    return () => clearTimeout(t)
-  }, [message])
-
-  const tryAnother = async (auto = false): Promise<void> => {
-    setBusy(true)
-    setMessage(null)
-    try {
-      const name = await window.api.tryAnotherRelease()
-      setMessage({ text: `${auto ? 'The release was slow, so switched' : 'Switched'} to ${name}`, error: false })
-    } catch (err) {
-      setMessage({ text: errorMessage(err), error: true })
-    } finally {
-      setBusy(false)
-    }
-  }
 
   // With the setting on, the first slow spell of an episode switches without asking.
   const episodeKey = `${state.series ?? ''}|${state.episodeLabel ?? state.title}`
@@ -338,7 +364,7 @@ function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
     return (
       <div className={`player-slow ${message.error ? 'failed' : 'done'}`}>
         <span className="player-slow-text">{message.text}</span>
-        <button className="link" onClick={() => setMessage(null)}>
+        <button className="link" onClick={() => setSlowBar({ message: null })}>
           OK
         </button>
       </div>
@@ -353,7 +379,7 @@ function SlowReleaseBar({ state }: { state: PlayerState }): JSX.Element | null {
       <button className="primary" onClick={() => tryAnother()}>
         Try another
       </button>
-      <button onClick={() => setDismissed(state.title)}>Dismiss</button>
+      <button onClick={() => setSlowBar({ dismissed: state.title })}>Dismiss</button>
     </div>
   )
 }

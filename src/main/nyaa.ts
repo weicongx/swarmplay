@@ -186,23 +186,46 @@ function parseSize(s: string): number {
   return m ? Math.round(Number(m[1]) * (UNITS[m[2]] ?? 1)) : 0
 }
 
+/** Far larger than any real .torrent; a bigger answer isn't one. */
+const MAX_TORRENT_BYTES = 10 * 1024 * 1024
+/** Listing a torrent's files and then adding it fetch the same file; keep recent ones a while. */
+const TORRENT_CACHE_MS = 10 * 60_000
+const TORRENT_CACHE_SIZE = 20
+const torrentCache = new Map<string, { at: number; buf: Promise<Buffer> }>()
+
 /** Download a .torrent file from the configured nyaa host. */
-export async function fetchTorrentFile(baseUrl: string, torrentUrl: string): Promise<Buffer> {
+export function fetchTorrentFile(baseUrl: string, torrentUrl: string): Promise<Buffer> {
   const target = new URL(torrentUrl)
   if (target.host !== new URL(baseUrl).host || !target.pathname.endsWith('.torrent')) {
     throw new Error('Only .torrent files from the configured nyaa host can be fetched')
   }
+  const key = target.href
+  const hit = torrentCache.get(key)
+  if (hit && Date.now() - hit.at < TORRENT_CACHE_MS) return hit.buf
 
+  const buf = downloadTorrent(target)
+  torrentCache.delete(key)
+  torrentCache.set(key, { at: Date.now(), buf })
+  while (torrentCache.size > TORRENT_CACHE_SIZE) torrentCache.delete(torrentCache.keys().next().value!)
+  // A failed download isn't kept, so the next try fetches again.
+  buf.catch(() => torrentCache.get(key)?.buf === buf && torrentCache.delete(key))
+  return buf
+}
+
+async function downloadTorrent(target: URL): Promise<Buffer> {
   const res = await fetch(target, {
     headers: { 'User-Agent': USER_AGENT },
     signal: AbortSignal.timeout(TIMEOUT_MS)
   })
   if (!res.ok) throw new Error(`nyaa returned HTTP ${res.status}`)
-  return Buffer.from(await res.arrayBuffer())
+  if (Number(res.headers.get('content-length')) > MAX_TORRENT_BYTES) throw new Error('That .torrent file is too large')
+  const buf = Buffer.from(await res.arrayBuffer())
+  if (buf.length > MAX_TORRENT_BYTES) throw new Error('That .torrent file is too large')
+  return buf
 }
 
 /** List a torrent's files without touching the swarm. */
 export async function getTorrentInfo(baseUrl: string, torrentUrl: string): Promise<TorrentInfo> {
-  const { infoHash: _, ...info } = parseTorrentFile(await fetchTorrentFile(baseUrl, torrentUrl))
+  const { infoHash: _, pieceLength: __, ...info } = parseTorrentFile(await fetchTorrentFile(baseUrl, torrentUrl))
   return { ...info, series: parseRelease(info.name).series }
 }

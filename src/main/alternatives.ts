@@ -16,7 +16,15 @@ const MAX_QUERIES = 3
  * from any group, at the same position. The library episode (and a followed
  * series' release) points at the new upload from then on.
  */
-export async function tryAnotherRelease(): Promise<string> {
+export function tryAnotherRelease(): Promise<string> {
+  // A second ask while one is searching (say, from the player after a switch
+  // between full and mini) waits for the same switch rather than starting another.
+  switching ??= switchRelease().finally(() => (switching = null))
+  return switching
+}
+let switching: Promise<string> | null = null
+
+async function switchRelease(): Promise<string> {
   const s = getPlayerState()
   if (!s.open || s.torrentId == null || s.fileIndex == null) throw new Error('Nothing is playing.')
   const { torrentId, fileIndex, timePos } = s
@@ -64,6 +72,13 @@ export async function tryAnotherRelease(): Promise<string> {
     videos.length === 1 ? videos[0] : videos.find((f) => parseRelease(basename(f.path)).episode === episode)
   if (!video) throw new Error(`Couldn't find episode ${episode} in ${best.title}.`)
 
+  // The search takes a while; if playback stopped or moved on meanwhile, leave it be.
+  const stillPlaying = (): boolean => {
+    const now = getPlayerState()
+    return now.open && now.torrentId === torrentId && now.fileIndex === fileIndex
+  }
+  if (!stillPlaying()) throw new Error('Playback moved on, so the upload was left as it is.')
+
   const folder = ep?.folder_id != null ? await resolveFolder({ id: ep.folder_id }) : null
   const { id: newId } = await addStream({ torrentUrl: best.torrentUrl, nyaaId: best.id, fileIndexes: [video.index] }, folder)
 
@@ -82,7 +97,11 @@ export async function tryAnotherRelease(): Promise<string> {
     db.prepare('DELETE FROM episodes WHERE torrent_id = ? AND file_index = ?').run(torrentId, fileIndex)
   }
 
-  await play(newId, video.index, timePos, true)
+  if (!stillPlaying()) {
+    await pruneStreamTorrents()
+    throw new Error('Playback moved on, so the upload was left as it is.')
+  }
+  await play(newId, video.index, getPlayerState().timePos || timePos, true)
   await pruneStreamTorrents()
   return best.title
 }

@@ -1,7 +1,7 @@
 import { spawn } from 'child_process'
 import { createHash } from 'crypto'
 import { createWriteStream } from 'fs'
-import { rm } from 'fs/promises'
+import { readdir, rm } from 'fs/promises'
 import { join } from 'path'
 import { app, BrowserWindow } from 'electron'
 import type { UpdateStatus } from '@shared/types'
@@ -12,6 +12,7 @@ import { getSettings } from './db'
 // (it keeps the library and settings) and starts the new version.
 const LATEST_URL = 'https://api.github.com/repos/weicongx/swarmplay/releases/latest'
 const INSTALLER = /^Swarmplay-Setup-[\d.]+\.exe$/
+const DOWNLOAD_PREFIX = 'https://github.com/weicongx/swarmplay/releases/download/'
 const FIRST_CHECK_MS = 30_000
 const CHECK_EVERY_MS = 6 * 60 * 60_000
 
@@ -79,7 +80,10 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
       assets?: { name: string; size: number; browser_download_url: string; digest?: string | null }[]
     }
     const version = r.tag_name.replace(/^v/, '')
-    const asset = r.assets?.find((a) => INSTALLER.test(a.name))
+    // Only the repo's own release download, and only with a checksum to verify it against.
+    const asset = r.assets?.find(
+      (a) => INSTALLER.test(a.name) && a.browser_download_url.startsWith(DOWNLOAD_PREFIX) && /^sha256:[0-9a-f]{64}$/i.test(a.digest ?? '')
+    )
     release =
       !r.draft && !r.prerelease && asset && newer(version, status.current)
         ? { version, notes: r.body ?? '', url: asset.browser_download_url, size: asset.size, digest: asset.digest ?? null }
@@ -121,7 +125,7 @@ export async function installUpdate(): Promise<void> {
     }
     await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())))
     const want = r.digest?.startsWith('sha256:') ? r.digest.slice(7).toLowerCase() : null
-    if (want && hash.digest('hex') !== want) throw new Error("the download doesn't match GitHub's checksum")
+    if (!want || hash.digest('hex') !== want) throw new Error("the download doesn't match GitHub's checksum")
     if (!app.isPackaged) {
       throw new Error(`Downloaded and verified ${file}; updates install only in the installed app.`)
     }
@@ -133,6 +137,15 @@ export async function installUpdate(): Promise<void> {
     if (app.isPackaged) await rm(file, { force: true }).catch(() => {})
     setStatus({ phase: 'idle', progress: 0, error: (err as Error).message })
     throw err
+  }
+}
+
+/** The installer of the last update stays in the temp folder while it runs; delete it once this version is up. */
+async function removeOldInstallers(): Promise<void> {
+  if (status.phase !== 'idle') return
+  const dir = app.getPath('temp')
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (INSTALLER.test(name)) await rm(join(dir, name), { force: true }).catch(() => {})
   }
 }
 
@@ -148,7 +161,7 @@ export function startUpdateChecks(onFound: (version: string) => void): void {
     }
   }
   setTimeout(() => {
-    void run()
+    void removeOldInstallers().then(run)
     setInterval(() => void run(), CHECK_EVERY_MS)
   }, FIRST_CHECK_MS)
 }

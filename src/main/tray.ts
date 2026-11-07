@@ -1,6 +1,7 @@
 import { Menu, Tray, nativeImage } from 'electron'
 import trayIcon from '../../resources/tray.png?asset'
-import { listTorrents, pauseAll, resumeAll } from './torrent'
+import { getPlayerState } from './player'
+import { pauseAll, recentTorrents, resumeAll } from './torrent'
 
 let tray: Tray | null = null
 let lastMenuKey = ''
@@ -13,7 +14,7 @@ export function createTray(onShow: () => void, onQuit: () => void): void {
 
   const update = (): void => {
     if (!tray) return
-    const list = listTorrents()
+    const list = recentTorrents()
     const downloading = list.filter((t) => t.status === 'downloading' || t.status === 'starting')
     const seeding = list.filter((t) => t.status === 'seeding').length
     const paused = list.filter((t) => t.status === 'paused').length
@@ -36,7 +37,7 @@ export function createTray(onShow: () => void, onQuit: () => void): void {
         { label: 'Open Swarmplay', click: onShow },
         { label: status, enabled: false },
         { type: 'separator' },
-        { label: 'Pause all downloads', enabled: downloading.length > 0, click: () => void pauseAll() },
+        { label: 'Pause all downloads', enabled: downloading.length > 0, click: () => void pauseAll(playingTorrent()) },
         { label: 'Resume all', enabled: paused > 0, click: () => void resumeAll() },
         { type: 'separator' },
         { label: 'Quit Swarmplay', click: onQuit }
@@ -46,6 +47,12 @@ export function createTray(onShow: () => void, onQuit: () => void): void {
 
   update()
   setInterval(update, 2000)
+}
+
+/** The episode playing keeps streaming: pausing its torrent would cut it off. */
+function playingTorrent(): number | null {
+  const s = getPlayerState()
+  return s.open ? s.torrentId : null
 }
 
 function speed(bytesPerSec: number): string {

@@ -110,6 +110,11 @@ let videoHeight: number | null = null
 
 const state: PlayerState = blankState()
 let broadcastTimer: NodeJS.Timeout | null = null
+/**
+ * Bumped by every play and close. A start that waits (for a torrent's metadata,
+ * or for a release to be added) gives up if another start or a close came meanwhile.
+ */
+let playSeq = 0
 
 function blankState(): PlayerState {
   return {
@@ -193,12 +198,16 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
     )
   }
 
+  const seq = ++playSeq
   const target = await preparePlayback(torrentId, fileIndex)
+  if (seq !== playSeq) return
   const resumeAt = rememberEpisode(torrentId, fileIndex, target)
   const start = startAt != null ? Math.max(0, Math.floor(startAt)) : resumeAt
 
   saveCurrent()
   await ensureMpv(mpv)
+  if (seq !== playSeq) return
+  const ep = describeEpisode(torrentId, fileIndex)
   current = {
     torrentId,
     fileIndex,
@@ -208,7 +217,7 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
     lastSaved: Date.now(),
     local: target.source === target.localPath,
     aheadStarted: false,
-    folderId: describeEpisode(torrentId, fileIndex).folderId,
+    folderId: ep.folderId,
     tracksApplied: false
   }
   tracks = []
@@ -220,7 +229,6 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
   noPeersSince = null
   statsTimer ??= setInterval(pollStats, 1000)
 
-  const ep = describeEpisode(torrentId, fileIndex)
   setState({
     ...blankState(),
     open: true,
@@ -321,6 +329,7 @@ export function closeIfPlaying(torrentId: number): void {
 // ---------------------------------------------------------------------------
 
 function closePlayer(): void {
+  playSeq++
   saveCurrent()
   current = null
   command('stop')
@@ -378,16 +387,21 @@ function playNext(onlyIfFinished: boolean): void {
     if (onlyIfFinished) closePlayer()
     return
   }
+  // Stopping, or picking another episode, while this one is starting cancels it.
+  const seq = ++playSeq
   const go =
     'releaseId' in next
       ? // A followed series' next episode that isn't in the library yet: add it to stream.
         (setState({ buffering: true }),
         addRelease(next.releaseId, false).then(({ torrentId, fileIndex }) => {
+          if (seq !== playSeq) return
           if (fileIndex == null) throw new Error('that torrent has no video file')
           return play(torrentId, fileIndex, undefined, onlyIfFinished)
         }))
       : play(next.torrentId, next.fileIndex, undefined, onlyIfFinished)
-  go.catch((err) => setState({ buffering: false, error: `Couldn't play the next episode: ${err.message}` }))
+  go.catch((err) => {
+    if (seq + 1 >= playSeq) setState({ buffering: false, error: `Couldn't play the next episode: ${err.message}` })
+  })
 }
 
 /** Once a second: the torrent's speed and peers, and whether the stream looks stuck. */
@@ -618,8 +632,10 @@ async function ensureMpv(mpvPath: string): Promise<void> {
 
   sock = await connectWithRetry()
   let buffered = ''
-  sock.on('data', (chunk) => {
-    buffered += chunk.toString('utf8')
+  // Decode as a stream, so a character split across two chunks stays whole.
+  sock.setEncoding('utf8')
+  sock.on('data', (chunk: string) => {
+    buffered += chunk
     let nl: number
     while ((nl = buffered.indexOf('\n')) >= 0) {
       const line = buffered.slice(0, nl)
