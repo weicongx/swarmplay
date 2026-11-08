@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
-import type { NyaaResult, NyaaSearchPage, NyaaSearchParams, NyaaSort, TorrentInfo } from '@shared/types'
+import { VIDEO_EXT, type NyaaResult, type NyaaSearchPage, type NyaaSearchParams, type NyaaSort, type TorrentInfo } from '@shared/types'
 import { parseRelease } from './release'
 import { parseTorrentFile } from './torrentFile'
 
@@ -227,5 +227,7 @@ async function downloadTorrent(target: URL): Promise<Buffer> {
 /** List a torrent's files without touching the swarm. */
 export async function getTorrentInfo(baseUrl: string, torrentUrl: string): Promise<TorrentInfo> {
   const { infoHash: _, pieceLength: __, ...info } = parseTorrentFile(await fetchTorrentFile(baseUrl, torrentUrl))
-  return { ...info, series: parseRelease(info.name).series }
+  const release = parseRelease(info.name)
+  const videos = info.files.filter((f) => VIDEO_EXT.test(f.path)).length
+  return { ...info, series: release.series, batch: videos > 1 && release.episode == null }
 }

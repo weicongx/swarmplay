@@ -151,7 +151,8 @@ export default function LibraryPage({ initialFolder = null }: { initialFolder?: 
         </p>
       )}
 
-      {(at === 'unsorted' || typeof at === 'number') && (
+      {/* A folder that only holds folders, like a series' seasons, needs no empty episode list. */}
+      {(at === 'unsorted' || (typeof at === 'number' && (episodes.length > 0 || available.length > 0 || childFolders.length === 0))) && (
         <EpisodeList episodes={episodes} available={available} lib={lib} torrents={torrents} run={run} />
       )}
     </div>
@@ -227,7 +228,9 @@ function FolderHeader({
   const watched = episodes.filter((e) => e.watched).length
   const downloaded = episodes.filter((e) => e.downloaded).length
   const total = episodes.length + available.length
-  const nested = subtreeEpisodes(lib, folder.id).filter((e) => e.downloaded).length
+  const nestedEps = subtreeEpisodes(lib, folder.id)
+  const nested = nestedEps.filter((e) => e.downloaded).length
+  const seasons = lib.folders.filter((f) => f.parentId === folder.id)
   const a = folder.anilist
   const follows = lib.follows.filter((f) => f.folderId === folder.id)
   // Up next: the first unwatched episode, which may be a followed series' episode not played yet.
@@ -276,12 +279,21 @@ function FolderHeader({
           </span>
         </p>
       )}
-      <p className="muted">
-        {total} episode{total === 1 ? '' : 's'}
-        {a?.episodes ? ` of ${a.episodes}` : ''}
-        {total > 0 && ` · ${watched} watched`}
-        {downloaded > 0 && ` · ${downloaded} downloaded`}
-      </p>
+      {total === 0 && seasons.length > 0 ? (
+        // A series folder: its episodes are in the folders inside it.
+        <p className="muted">
+          {nestedEps.length} episode{nestedEps.length === 1 ? '' : 's'} in {seasons.length} folder{seasons.length === 1 ? '' : 's'}
+          {nestedEps.length > 0 && ` · ${nestedEps.filter((e) => e.watched).length} watched`}
+          {nested > 0 && ` · ${nested} downloaded`}
+        </p>
+      ) : (
+        <p className="muted">
+          {total} episode{total === 1 ? '' : 's'}
+          {a?.episodes ? ` of ${a.episodes}` : ''}
+          {total > 0 && ` · ${watched} watched`}
+          {downloaded > 0 && ` · ${downloaded} downloaded`}
+        </p>
+      )}
       {follows.map((f) => (
         <FollowLine key={f.id} follow={f} run={run} />
       ))}

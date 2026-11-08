@@ -74,6 +74,8 @@ export interface TorrentInfo {
   trackers: string[]
   /** Series name parsed from the release name, used to suggest a library folder */
   series: string
+  /** Several episodes (a batch), not one episode with extras */
+  batch: boolean
 }
 
 /**
@@ -204,6 +206,35 @@ export interface AddTorrentResult {
   id: number
   /** True when the torrent was already in Downloads (new files are merged into its selection). */
   existed: boolean
+  /** Where a batch spanning several seasons was filed */
+  filed?: FiledBatch
+}
+
+/** A season of a show, as a batch's files map onto it. */
+export interface BatchSeason {
+  anilistId: number
+  /** Folder name in the series folder, e.g. "Season 2 Part 2" */
+  label: string
+  /** AniList romaji title */
+  title: string
+  /** Its folder, if the library already has one */
+  folderId: number | null
+}
+
+/** How a batch of a show with several seasons splits into a folder per season. */
+export interface BatchPlan {
+  /** The show's folder, holding a folder per season; null if it isn't in the library yet */
+  series: { folderId: number | null; name: string }
+  /** Seasons the batch's videos fall in, in airing order */
+  seasons: BatchSeason[]
+  /** Each video: its season (an index into `seasons`) and episode number within that season */
+  files: { index: number; season: number; episode: number | null }[]
+}
+
+export interface FiledBatch {
+  folderId: number
+  name: string
+  seasons: { label: string; folderId: number; episodes: number }[]
 }
 
 export interface Settings {
@@ -433,6 +464,10 @@ export interface AppApi {
   dismissRelease(releaseId: number): Promise<void>
   /** The folder a release with this series name belongs in, matching by name and AniList entry. */
   suggestFolder(series: string): Promise<{ folderId: number | null; name: string }>
+  /** How a batch would split into seasons, or null if it isn't a batch of a show with several. */
+  planBatch(torrentUrl: string): Promise<BatchPlan | null>
+  /** Add a torrent's episodes to the library to stream, without playing or downloading them. */
+  addToLibrary(req: AddTorrentRequest): Promise<AddTorrentResult>
   searchAniList(query: string): Promise<AniListMedia[]>
   /** anilistId null unlinks */
   linkFolder(folderId: number, anilistId: number | null): Promise<void>

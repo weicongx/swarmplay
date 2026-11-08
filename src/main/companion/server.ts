@@ -14,7 +14,8 @@ import { continueWatching } from '@shared/folders'
 import { VIDEO_EXT, type NyaaResult } from '@shared/types'
 import { getDb, getSettings } from '../db'
 import { followSeries } from '../follows'
-import { addRelease, addToFolder, getLibrary, nextEpisode, suggestFolder } from '../library'
+import { streamToLibrary } from '../batches'
+import { addRelease, getLibrary, nextEpisode, suggestFolder } from '../library'
 import { getTorrentInfo, searchNyaa } from '../nyaa'
 import { setWatched } from '../player'
 import { addStream } from '../torrent'
@@ -479,8 +480,8 @@ async function play(device: Device, body: Record<string, unknown>, links: VideoL
         .filter((f) => VIDEO_EXT.test(f.path))
         .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
       if (!videos.some((f) => f.index === fileIndex)) throw new HttpError(400, "That file isn't a video.")
-      const req = { torrentUrl: r.torrentUrl, nyaaId: r.id, fileIndexes: videos.map((f) => f.index) }
-      const { id } = await addToFolder(info.series ? { name: info.series } : undefined, (folder) => addStream(req, folder))
+      const req = { torrentUrl: r.torrentUrl, nyaaId: r.id, fileIndexes: videos.map((f) => f.index), folder: info.series ? { name: info.series } : undefined }
+      const { id } = await streamToLibrary(req, (folder) => addStream(req, folder))
       return { torrentId: id, fileIndex }
     }
     const torrentId = index(body.torrentId)

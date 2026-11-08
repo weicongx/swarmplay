@@ -28,7 +28,6 @@ import {
   setWatched
 } from './player'
 import {
-  addToFolder,
   createFolder,
   deleteEpisode,
   deleteFolder,
@@ -46,6 +45,7 @@ import {
 import { activePlayback } from './playback'
 import { searchAniList } from './anilist'
 import { tryAnotherRelease } from './alternatives'
+import { addToLibrary, planBatch, streamToLibrary } from './batches'
 import { checkFollow, downloadRelease, followSeries, streamRelease, unfollow } from './follows'
 import {
   cancelPhonePairing,
@@ -101,7 +101,7 @@ export function registerIpc(): void {
     return settings
   })
 
-  handle('torrents:add', (_e, req: AddTorrentRequest) => addToFolder(req.folder, (folder) => addTorrent(req, folder)))
+  handle('torrents:add', (_e, req: AddTorrentRequest) => addToLibrary(req, (folder) => addTorrent(req, folder)))
   handle('torrents:list', () => listTorrents())
   handle('torrents:pause', (_e, id: number) => {
     // Pausing stops the torrent, which would cut off the episode playing from it.
@@ -123,8 +123,13 @@ export function registerIpc(): void {
   handle('player:tryAnother', () => tryAnotherRelease())
   ipcMain.on('player:bounds', (e, rect: VideoRect | null) => trusted(e) && setVideoBounds(rect))
   handle('player:streamNow', async (_e, req: AddTorrentRequest, fileIndex: number) => {
-    const { id } = await addToFolder(req.folder, (folder) => addStream(req, folder))
+    const { id } = await streamToLibrary(req, (folder) => addStream(req, folder))
     await play(id, fileIndex)
+  })
+  handle('library:add', (_e, req: AddTorrentRequest) => addToLibrary(req, (folder) => addStream(req, folder)))
+  handle('library:planBatch', async (_e, torrentUrl: string) => {
+    const plan = await planBatch(torrentUrl)
+    return plan && { series: plan.series, seasons: plan.seasons, files: plan.files }
   })
 
   handle('library:get', () => getLibrary())

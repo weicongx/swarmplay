@@ -16,7 +16,8 @@ export interface ReleaseInfo {
 const TRAILING_SEASON = /[\s\-–:]*(?:S\d{1,2}|Season\s*\d{1,2}|\d{1,2}(?:st|nd|rd|th)\s+Season)$/i
 
 export function parseRelease(name: string): ReleaseInfo {
-  const r = parse(name)
+  // anitomy reads a re-released extra, "24.9v2", as episode 9.
+  const r = parse(name.replace(/(\d+\.\d+)v\d+\b/g, '$1'))
   let series = (r?.title ?? '').replace(TRAILING_SEASON, '').replace(/[\s\-–:.|]+$/, '').trim()
   const season = Number(r?.season)
   if (season > 1) series += ` S${season}`

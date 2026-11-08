@@ -136,6 +136,11 @@ const MIGRATIONS: string[] = [
     last_seen_at INTEGER,
     last_ip      TEXT
   );
+  `,
+  `
+  -- A series folder holding a folder per season: the AniList id of the show's
+  -- first season, so every batch of the show finds it. NULL: an ordinary folder.
+  ALTER TABLE folders ADD COLUMN franchise_id INTEGER;
   `
 ]
 

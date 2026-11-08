@@ -18,6 +18,7 @@ node scripts\cdp\run.mjs scripts\cdp\cleanup.js
 | `mini.js` | The mini player while browsing, through autoplay, and back |
 | `another.js` | **Try another**: stopping mid-switch leaves the library as it was; a switch keeps the position and one library entry |
 | `speed.js` | Seek times on a busy series at a 2 MiB/s cap: plain seeks, and seeks after the pointer rested on the spot; also start time and peers per second |
+| `batch.js` | Batches of a show with several seasons (Slime 01-48, 49-72, S4 01-24): a series folder with a folder per season from AniList, later batches merging into it, an earlier season folder moving in. Adds to the library only; nothing downloads |
 | `upload.js` | A weakly seeded followed episode switching to a well-seeded upload before it plays (needs a series on nyaa with an upload under 10 seeders) |
 | `companion.mjs` | The phone companion, end to end (see below) |
 | `cleanup.js` | Deletes the test folders and their files |

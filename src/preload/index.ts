@@ -56,6 +56,8 @@ const api: AppApi = {
     ipcRenderer.invoke('library:deleteEpisode', episodeId, removeFromLibrary),
   dismissRelease: (releaseId) => ipcRenderer.invoke('releases:dismiss', releaseId),
   suggestFolder: (series) => ipcRenderer.invoke('library:suggestFolder', series),
+  planBatch: (torrentUrl) => ipcRenderer.invoke('library:planBatch', torrentUrl),
+  addToLibrary: (req) => ipcRenderer.invoke('library:add', req),
   searchAniList: (query) => ipcRenderer.invoke('anilist:search', query),
   linkFolder: (folderId, anilistId) => ipcRenderer.invoke('library:linkFolder', folderId, anilistId),
   followSeries: (release, folder) => ipcRenderer.invoke('follows:follow', release, folder),

@@ -24,8 +24,27 @@ const QUERY = `query ($s: String) {
 
 const DESCRIPTION_QUERY = `query ($id: Int) { Media(id: $id) { description(asHtml: false) } }`
 
+// An entry, its relations, and theirs: two hops of the franchise per request.
+const FIELDS = 'id type status title { romaji english } synonyms format seasonYear episodes startDate { year month day } coverImage { large color }'
+const FRANCHISE_QUERY = `query ($id: Int) {
+  Media(id: $id) {
+    ${FIELDS}
+    relations { edges { relationType node { ${FIELDS} relations { edges { relationType node { ${FIELDS} } } } } } }
+  }
+}`
+/** Shorter than search results: a new season gets announced, an airing one's episode count changes. */
+const FRANCHISE_CACHE_MS = 24 * 3600_000
+/** A safety stop for very long franchises; each request explores two hops. */
+const FRANCHISE_MAX_REQUESTS = 8
+/** Formats that are seasons of the show; movies, OVAs and specials aren't. */
+const SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA'])
+
 interface RawMedia {
   id: number
+  type?: string
+  status?: string | null
+  startDate?: { year: number | null; month: number | null; day: number | null }
+  relations?: { edges: { relationType: string; node: RawMedia }[] }
   title: { romaji: string; english: string | null }
   synonyms: string[]
   format: string | null
@@ -98,6 +117,63 @@ export async function findSeries(series: string): Promise<Candidate | null> {
     if (!best || score > best.score) best = { c, score }
   }
   return best?.c ?? null
+}
+
+/**
+ * The AniList entry a batch of a series starts from: its first season if that
+ * matches exactly ("Show" for "Show S4"), else the season named.
+ */
+export async function findFranchise(series: string): Promise<Candidate | null> {
+  const { base, season } = splitSeason(series)
+  return (await findSeries(base)) ?? (season > 1 ? await findSeries(series) : null)
+}
+
+/**
+ * Every season of the show an entry belongs to, in airing order: the TV (or
+ * ONA) entries reachable through sequel and prequel links. Movies and OVAs are
+ * passed through but left out, since sequels are often linked through them;
+ * spin-offs aren't sequels, so they stay out. Seasons not aired yet are left out.
+ */
+export async function franchiseSeasons(id: number): Promise<Candidate[]> {
+  const key = `franchise:${id}`
+  const db = getDb()
+  const cached = db.prepare('SELECT json, fetched_at FROM anilist_cache WHERE query = ?').get(key) as
+    | { json: string; fetched_at: number }
+    | undefined
+  if (cached && Date.now() - cached.fetched_at < FRANCHISE_CACHE_MS) return toCandidates(JSON.parse(cached.json))
+
+  const nodes = new Map<number, RawMedia>()
+  const expanded = new Set<number>()
+  const visit = (m: RawMedia): void => {
+    const { relations, ...plain } = m
+    if (!nodes.has(m.id)) nodes.set(m.id, plain)
+    if (!relations) return
+    expanded.add(m.id)
+    for (const e of relations.edges) {
+      if ((e.relationType === 'SEQUEL' || e.relationType === 'PREQUEL') && e.node.type === 'ANIME') visit(e.node)
+    }
+  }
+  for (let requests = 0, next: number | undefined = id; next != null && requests < FRANCHISE_MAX_REQUESTS; requests++) {
+    const data = await request<{ Media?: RawMedia }>(FRANCHISE_QUERY, { id: next })
+    if (!data?.Media) break
+    visit(data.Media)
+    // Entries seen two hops out, whose own links weren't fetched yet.
+    next = [...nodes.keys()].find((n) => !expanded.has(n))
+  }
+
+  const date = (m: RawMedia): number =>
+    (m.startDate?.year ?? 9999) * 10_000 + (m.startDate?.month ?? 12) * 100 + (m.startDate?.day ?? 31)
+  const seasons = [...nodes.values()]
+    .filter((m) => SEASON_FORMATS.has(m.format ?? '') && m.status !== 'NOT_YET_RELEASED' && m.status !== 'CANCELLED')
+    .sort((a, b) => date(a) - date(b) || a.id - b.id)
+
+  // Under every season of the show, so a batch starting at any of them finds it without asking again.
+  const save = db.prepare(
+    'INSERT INTO anilist_cache (query, json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(query) DO UPDATE SET json = excluded.json, fetched_at = excluded.fetched_at'
+  )
+  const json = JSON.stringify(seasons)
+  for (const m of new Set([id, ...seasons.map((s) => s.id)])) save.run(`franchise:${m}`, json, Date.now())
+  return toCandidates(seasons)
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import type { TorrentInfo } from '@shared/types'
 import { bdecode, type BValue } from './bencode'
 
-export interface ParsedTorrent extends Omit<TorrentInfo, 'series'> {
+export interface ParsedTorrent extends Omit<TorrentInfo, 'series' | 'batch'> {
   infoHash: string
   /** Bytes per piece; files are laid end to end, so pieces at their edges are shared. */
   pieceLength: number

@@ -1188,10 +1188,17 @@ async function becomeStreamOnly(entry: Entry, deleteLeftovers: boolean): Promise
  * folder of its episodes. The torrent must be stopped.
  */
 async function moveToLibrary(entry: Entry): Promise<void> {
+  // A season's files go under its series folder's name, so a batch of several seasons stays together.
   const folder = getDb()
     .prepare(
-      `SELECT f.name FROM episodes e JOIN folders f ON f.id = e.folder_id
-       WHERE e.torrent_id = ? AND e.title != '' LIMIT 1`
+      `WITH RECURSIVE up(name, parent_id, franchise_id, depth) AS (
+         SELECT f.name, f.parent_id, f.franchise_id, 0 FROM folders f
+         WHERE f.id = (SELECT folder_id FROM episodes WHERE torrent_id = ? AND title != '' AND folder_id IS NOT NULL LIMIT 1)
+         UNION ALL
+         SELECT f.name, f.parent_id, f.franchise_id, up.depth + 1 FROM folders f JOIN up ON f.id = up.parent_id
+         WHERE up.franchise_id IS NULL
+       )
+       SELECT name FROM up ORDER BY franchise_id IS NULL, depth LIMIT 1`
     )
     .get(entry.row.id) as { name: string } | undefined
   const root = getSettings().libraryRoot

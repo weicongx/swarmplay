@@ -34,6 +34,8 @@ interface FolderRow {
   /** JSON AniListMedia */
   anilist_meta: string | null
   anilist_checked_at: number | null
+  /** Set on a series folder: the AniList id of the show's first season */
+  franchise_id: number | null
 }
 
 interface EpisodeRow {
@@ -52,7 +54,7 @@ interface EpisodeRow {
 
 export function getLibrary(): LibraryData {
   const db = getDb()
-  const folders = (db.prepare('SELECT * FROM folders ORDER BY name COLLATE NOCASE').all() as unknown as FolderRow[]).map(
+  const folders = (db.prepare('SELECT * FROM folders ORDER BY sort_order, name COLLATE NOCASE').all() as unknown as FolderRow[]).map(
     (f): FolderInfo => ({
       id: f.id,
       name: f.name,
@@ -215,7 +217,7 @@ async function autoLink(folderId: number): Promise<void> {
   else getDb().prepare('UPDATE folders SET anilist_checked_at = ? WHERE id = ?').run(Date.now(), folderId)
 }
 
-function saveLink(folderId: number, c: Candidate): void {
+export function saveLink(folderId: number, c: Candidate): void {
   getDb()
     .prepare(
       'UPDATE folders SET anilist_id = ?, anilist_titles = ?, anilist_meta = ?, cover_url = ?, anilist_checked_at = ? WHERE id = ?'
@@ -411,7 +413,8 @@ export async function suggestFolder(series: string): Promise<{ folderId: number 
 
 /** Match a series name to a folder: by name or AniList titles first, then by AniList id. */
 async function matchSeries(series: string): Promise<{ folder: FolderRow | null; anilist: Candidate | null }> {
-  const folders = getDb().prepare('SELECT * FROM folders').all() as unknown as FolderRow[]
+  // A series folder holds seasons, not episodes; an episode goes in its season's folder.
+  const folders = getDb().prepare('SELECT * FROM folders WHERE franchise_id IS NULL').all() as unknown as FolderRow[]
   const key = seriesKey(series)
   const byName = folders.find(
     (f) =>
@@ -495,7 +498,31 @@ export function nextEpisode(torrentId: number, fileIndex: number): NextUp | null
           .get(folderId, num) as unknown as { id: number; episode_num: number } | undefined)
       : undefined
   if (release && (next?.episodeNum == null || release.episode_num < next.episodeNum)) return { releaseId: release.id }
-  return next ? { torrentId: next.torrentId, fileIndex: next.fileIndex } : null
+  if (next) return { torrentId: next.torrentId, fileIndex: next.fileIndex }
+  return folderId !== null && i === eps.length - 1 ? nextSeason(folderId) : null
+}
+
+/** The first episode of the season after this one, when it's a season in a series folder. */
+function nextSeason(folderId: number): NextUp | null {
+  const db = getDb()
+  const seasons = db
+    .prepare(
+      `SELECT s.id FROM folders s JOIN folders p ON p.id = s.parent_id
+       WHERE p.franchise_id IS NOT NULL AND s.parent_id = (SELECT parent_id FROM folders WHERE id = ?)
+       ORDER BY s.sort_order, s.name COLLATE NOCASE`
+    )
+    .all(folderId) as { id: number }[]
+  const at = seasons.findIndex((s) => s.id === folderId)
+  if (at < 0) return null
+  for (const { id } of seasons.slice(at + 1)) {
+    const eps = (
+      db
+        .prepare("SELECT torrent_id, file_index, episode_num, title FROM episodes WHERE title != '' AND folder_id = ?")
+        .all(id) as { torrent_id: number; file_index: number; episode_num: number | null; title: string }[]
+    ).sort((a, b) => compareEpisodes({ episodeNum: a.episode_num, title: a.title }, { episodeNum: b.episode_num, title: b.title }))
+    if (eps.length) return { torrentId: eps[0].torrent_id, fileIndex: eps[0].file_index }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +544,7 @@ function descendants(id: number): number[] {
   return rows.map((r) => r.id)
 }
 
-function cleanName(name: string): string {
+export function cleanName(name: string): string {
   const s = name.replace(/\s+/g, ' ').trim().slice(0, 120)
   if (!s) throw new Error('Folder name cannot be empty')
   return s

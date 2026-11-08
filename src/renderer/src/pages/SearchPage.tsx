@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { flattenFolders } from '@shared/folders'
 import {
   NYAA_CATEGORIES,
   NYAA_FILTERS,
   VIDEO_EXT,
   type AddTorrentRequest,
+  type AddTorrentResult,
+  type BatchPlan,
   type FolderInfo,
   type FollowResult,
   type NyaaResult,
@@ -299,6 +301,9 @@ function DetailPanel({
   /** The notice is about a stream, which isn't in Downloads */
   const [streamed, setStreamed] = useState(false)
   const [followed, setFollowed] = useState<FollowResult | null>(null)
+  /** How a batch of a show with several seasons splits; undefined while AniList is asked */
+  const [plan, setPlan] = useState<BatchPlan | null | undefined>(undefined)
+  const [filed, setFiled] = useState<AddTorrentResult['filed'] | null>(null)
   const [folders, setFolders] = useState<FolderInfo[]>([])
   /** 'new', 'none' (Unsorted), or an existing folder id */
   const [folderChoice, setFolderChoice] = useState<string>('new')
@@ -312,6 +317,8 @@ function DetailPanel({
     setCopied(false)
     setAdded(null)
     setFollowed(null)
+    setPlan(undefined)
+    setFiled(null)
     folderTouched.current = false
     Promise.all([window.api.getTorrentInfo(result.torrentUrl), window.api.getLibrary()])
       .then(([i, lib]) => {
@@ -322,13 +329,33 @@ function DetailPanel({
         setNewFolderName(i.series)
         // File it with an existing folder for this series if there is one; this can
         // take a moment when it has to ask AniList, so don't override a manual pick.
-        window.api
-          .suggestFolder(i.series)
-          .then((s) => {
-            if (cancelled || folderTouched.current) return
-            setFolderChoice(s.folderId != null ? String(s.folderId) : 'new')
-          })
-          .catch(() => {})
+        const suggest = (): void => {
+          window.api
+            .suggestFolder(i.series)
+            .then((s) => {
+              if (cancelled || folderTouched.current) return
+              setFolderChoice(s.folderId != null ? String(s.folderId) : 'new')
+            })
+            .catch(() => {})
+        }
+        // A batch of a show with several seasons goes in the show's series folder, a
+        // folder per season; only when it has one season does it go by series name.
+        if (i.batch) {
+          window.api
+            .planBatch(result.torrentUrl)
+            .catch(() => null)
+            .then((p) => {
+              if (cancelled) return
+              setPlan(p)
+              if (!p) return suggest()
+              if (folderTouched.current) return
+              setFolderChoice(p.series.folderId != null ? String(p.series.folderId) : 'new')
+              setNewFolderName(p.series.name)
+            })
+        } else {
+          setPlan(null)
+          suggest()
+        }
         // Default to every video file; fall back to everything if there are none.
         const videos = i.files.filter((f) => VIDEO_EXT.test(f.path))
         setChecked(new Set((videos.length ? videos : i.files).map((f) => f.index)))
@@ -364,6 +391,7 @@ function DetailPanel({
     setStreamed(false)
     try {
       const res = await window.api.addTorrent(request)
+      setFiled(res.filed ?? null)
       setAdded(res.existed ? 'Downloading; anything new was added to it.' : 'Downloading.')
     } catch (err) {
       setError(errorMessage(err))
@@ -378,6 +406,7 @@ function DetailPanel({
     setError(null)
     setAdded(null)
     try {
+      setFiled(null)
       await window.api.streamNow(request, firstVideo.index)
       setStreamed(true)
       setAdded(
@@ -390,10 +419,32 @@ function DetailPanel({
     }
   }
 
+  // A batch has nothing to follow: its episodes go in the library to stream, as they are.
+  async function addBatch(): Promise<void> {
+    setAdding(true)
+    setError(null)
+    setAdded(null)
+    try {
+      const res = await window.api.addToLibrary(request)
+      setStreamed(true)
+      setFiled(res.filed ?? null)
+      setAdded(
+        res.filed
+          ? `Added to ${res.filed.name} to stream; nothing is saved to disk.`
+          : `Added ${checked.size === 1 ? 'it' : `${checked.size} files`} to the library to stream; nothing is saved to disk.`
+      )
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setAdding(false)
+    }
+  }
+
   async function follow(): Promise<void> {
     setAdding(true)
     setError(null)
     setAdded(null)
+    setFiled(null)
     try {
       setFollowed(await window.api.followSeries(result, request.folder))
     } catch (err) {
@@ -413,6 +464,10 @@ function DetailPanel({
   }
 
   const videoCount = info?.files.filter((f) => VIDEO_EXT.test(f.path)).length ?? 0
+  const isBatch = info?.batch ?? false
+  // Each video's season, and the ticked videos in each.
+  const seasonOf = useMemo(() => new Map(plan?.files.map((f) => [f.index, f.season]) ?? []), [plan])
+  const perSeason = plan?.seasons.map((_, i) => plan.files.filter((f) => f.season === i && checked.has(f.index)))
   // Torrents list files in arbitrary order; show episodes as 01, 02, ... 10.
   const files = useMemo(
     () => info?.files.slice().sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true })),
@@ -451,7 +506,7 @@ function DetailPanel({
 
       {info && (
         <label className="save-to">
-          <span>Save to library folder</span>
+          <span>{plan && folderChoice !== 'none' ? 'Series folder, with a folder per season' : 'Save to library folder'}</span>
           <select
             value={folderChoice}
             onChange={(e) => {
@@ -480,6 +535,22 @@ function DetailPanel({
           )}
         </label>
       )}
+      {info && isBatch && plan === undefined && <p className="muted batch-note">Matching seasons on AniList…</p>}
+      {plan && perSeason && folderChoice !== 'none' && (
+        <ul className="batch-seasons" aria-label="Seasons">
+          {plan.seasons.map((s, i) =>
+            perSeason[i].length === 0 ? null : (
+              <li key={s.anilistId} title={s.title}>
+                <span>{s.label}</span>
+                <span className="muted">
+                  {episodeRange(perSeason[i].map((f) => f.episode))}
+                  {s.folderId != null && ' · joins its folder'}
+                </span>
+              </li>
+            )
+          )}
+        </ul>
+      )}
 
       <div className="actions">
         <button
@@ -507,6 +578,14 @@ function DetailPanel({
       {added && (
         <div className="notice">
           {added}{' '}
+          {filed && filed.seasons.length > 0 && (
+            <>
+              {filed.seasons.map((s) => `${s.label} (${s.episodes})`).join(', ')}.{' '}
+              <button className="link" onClick={() => onOpenFolder(filed.folderId)}>
+                Open folder
+              </button>{' '}
+            </>
+          )}
           {!streamed && (
             <button className="link" onClick={onOpenDownloads}>
               View downloads
@@ -515,13 +594,23 @@ function DetailPanel({
         </div>
       )}
       <div className="actions">
-        <button
-          disabled={!info || adding}
-          onClick={follow}
-          title="Adds this group's other episodes of the series to the library without downloading them, and adds new ones as they come out"
-        >
-          Add series to library
-        </button>
+        {isBatch ? (
+          <button
+            disabled={checked.size === 0 || adding || plan === undefined}
+            onClick={addBatch}
+            title={`Adds the ticked episodes to the library to stream, without downloading them${plan ? ', in a folder per season' : ''}`}
+          >
+            {plan && folderChoice !== 'none' ? 'Add seasons to library' : 'Add to library'}
+          </button>
+        ) : (
+          <button
+            disabled={!info || adding}
+            onClick={follow}
+            title="Adds this group's other episodes of the series to the library without downloading them, and adds new ones as they come out"
+          >
+            Add series to library
+          </button>
+        )}
       </div>
       {followed && (
         <div className="notice">
@@ -552,16 +641,21 @@ function DetailPanel({
       {!info && !error && <p className="muted">Loading file list…</p>}
       {info && files && (
         <ul className="files">
-          {files.map((f) => (
-            <li key={f.index} className={VIDEO_EXT.test(f.path) ? 'video' : ''}>
-              <label className="file-check">
-                {info.files.length > 1 && (
-                  <input type="checkbox" checked={checked.has(f.index)} onChange={() => toggle(f.index)} />
-                )}
-                <span className="file-name">{displayPath(f.path, info.name)}</span>
-              </label>
-              <span className="muted">{formatBytes(f.length)}</span>
-            </li>
+          {files.map((f, i) => (
+            <Fragment key={f.index}>
+              {plan && seasonOf.has(f.index) && seasonOf.get(f.index) !== seasonOf.get(files[i - 1]?.index) && (
+                <li className="file-season">{plan.seasons[seasonOf.get(f.index)!].label}</li>
+              )}
+              <li className={VIDEO_EXT.test(f.path) ? 'video' : ''}>
+                <label className="file-check">
+                  {info.files.length > 1 && (
+                    <input type="checkbox" checked={checked.has(f.index)} onChange={() => toggle(f.index)} />
+                  )}
+                  <span className="file-name">{displayPath(f.path, info.name)}</span>
+                </label>
+                <span className="muted">{formatBytes(f.length)}</span>
+              </li>
+            </Fragment>
           ))}
         </ul>
       )}
@@ -569,3 +663,12 @@ function DetailPanel({
   )
 }
 
+/** "Episodes 1–24 + 1 extra", "Episode 5", "2 extras": extras are recaps like 24.5, or unnumbered. */
+function episodeRange(episodes: (number | null)[]): string {
+  const nums = episodes.filter((e): e is number => e != null && Number.isInteger(e)).sort((a, b) => a - b)
+  const extra = episodes.length - nums.length
+  const extras = `${extra} extra${extra === 1 ? '' : 's'}`
+  if (nums.length === 0) return extras
+  const range = nums.length === 1 ? `Episode ${nums[0]}` : `Episodes ${nums[0]}–${nums[nums.length - 1]}`
+  return extra ? `${range} + ${extras}` : range
+}
