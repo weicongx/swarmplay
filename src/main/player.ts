@@ -14,7 +14,16 @@ import {
 import { getDb, getSettings, setSettings } from './db'
 import { addRelease, describeEpisode, nextEpisode } from './library'
 import { activePlayback, registerPlayer, stopIfPlayingFrom, takeOver } from './playback'
-import { endStream, fetchedRanges, prefetch, preparePlayback, streamStats, type PlaybackTarget } from './torrent'
+import {
+  dropWindows,
+  endStream,
+  fetchAt,
+  fetchedRanges,
+  prefetch,
+  preparePlayback,
+  streamStats,
+  type PlaybackTarget
+} from './torrent'
 
 // One mpv instance is reused for every episode, driven over its JSON IPC pipe.
 // It renders into a frameless child window ("host") kept on top of the video
@@ -84,8 +93,33 @@ interface Chapter {
   time: number
 }
 
-/** mpv's read-ahead for the current file: buffered up to `end` seconds, or to the end of the file. */
-let cache = { end: 0, eof: false }
+/**
+ * mpv's demuxer cache: where it ends (seconds), whether it reached the file's end,
+ * the spans it can seek in without reading, and whether it's done reading for now.
+ */
+let cache: MpvCache = blankCache()
+interface MpvCache {
+  end: number
+  eof: boolean
+  ranges: [number, number][]
+  idle: boolean
+}
+function blankCache(): MpvCache {
+  return { end: 0, eof: false, ranges: [], idle: false }
+}
+/** Seeks closer together than this (a held arrow key) fetch for the last of them once this has passed. */
+const SEEK_FETCH_COALESCE_MS = 150
+let seekFetch: { timer: ReturnType<typeof setTimeout> | null; pending: number | null } = { timer: null, pending: null }
+/**
+ * The seek bar's spot under the cursor, fetched alongside playback while mpv has
+ * enough buffered that sharing the bandwidth can't stall it, from
+ * HOVER_START_AHEAD_SEC; it stops below HOVER_STOP_AHEAD_SEC, and starts again
+ * once the buffer is back.
+ */
+let hoverAt: number | null = null
+let hoverOn = false
+const HOVER_START_AHEAD_SEC = 20
+const HOVER_STOP_AHEAD_SEC = 10
 let chapters: Chapter[] = []
 /** Chapters already offered for skipping (or skipped), so each is handled once per episode. */
 let skipOffered = new Set<number>()
@@ -217,6 +251,8 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
   // Playing here stops a phone, or a phone's start.
   takeOver('pc')
   const seq = ++playSeq
+  // The last file's seek windows would keep fetching it, in a batch whose torrent stays.
+  stopSeekFetching()
   const target = await preparePlayback(torrentId, fileIndex)
   if (seq !== playSeq) return
   const resumeAt = rememberEpisode(torrentId, fileIndex, target)
@@ -226,6 +262,8 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
   await ensureMpv(mpv)
   if (seq !== playSeq) return
   const ep = describeEpisode(torrentId, fileIndex)
+  // Again: until now a seek or a hover over the seek bar still went to the last file.
+  stopSeekFetching()
   current = {
     torrentId,
     fileIndex,
@@ -239,7 +277,7 @@ export async function play(torrentId: number, fileIndex: number, startAt?: numbe
     tracksApplied: false
   }
   tracks = []
-  cache = { end: 0, eof: false }
+  cache = blankCache()
   chapters = []
   coreIdle = true
   skipOffered = new Set()
@@ -281,9 +319,14 @@ export function playerCommand(cmd: PlayerCommand): void {
     case 'toggle-pause':
       return command('cycle', 'pause')
     case 'seek':
+      fetchSeekTarget(Math.max(0, cmd.seconds))
       return command('seek', Math.max(0, cmd.seconds), 'absolute')
     case 'seek-by':
+      if (current) fetchSeekTarget(Math.max(0, current.pos + cmd.seconds))
       return command('seek', cmd.seconds, 'relative')
+    case 'seek-preview':
+      hoverAt = cmd.seconds
+      return syncHover()
     case 'volume':
       return command('set_property', 'volume', Math.min(130, Math.max(0, cmd.value)))
     case 'toggle-mute':
@@ -352,6 +395,7 @@ function closePlayer(releaseStream = true): void {
   saveCurrent()
   current = null
   command('stop')
+  stopSeekFetching()
   // Streamed data is deleted once mpv lets go of it (the delete retries if it's still busy).
   if (releaseStream) endStream().catch((err) => console.error('Failed to clean up a stream:', err))
   if (mainWin?.isFullScreen()) mainWin.setFullScreen(false)
@@ -441,6 +485,7 @@ function pollStats(): void {
     },
     false
   )
+  if (hoverAt != null || hoverOn) syncHover()
   // Fullscreen may have hidden the bars, so say it over the video too.
   if (state.fullscreen && !c.local && bufferingSince != null && now - bufferingSince >= 1000) {
     const peers = `${s.numPeers} peer${s.numPeers === 1 ? '' : 's'}`
@@ -480,8 +525,68 @@ function updateSkip(pos: number): void {
 function skipChapter(): void {
   const skip = state.skip
   if (!skip) return
-  if (skip.to != null) command('seek', skip.to, 'absolute')
+  if (skip.to != null) {
+    fetchSeekTarget(skip.to)
+    command('seek', skip.to, 'absolute')
+  }
   else command('seek', 100, 'absolute-percent')
+}
+
+/**
+ * Fetch the stream's pieces at a seek's target ahead of the rest, so the seek
+ * plays sooner. Nothing to do for a file playing from disk, or when mpv has the
+ * target in its cache already: it seeks there without reading.
+ */
+/** Drop the seek and hover windows, and any seek fetch still waiting to go. */
+function stopSeekFetching(): void {
+  if (seekFetch.timer) clearTimeout(seekFetch.timer)
+  seekFetch = { timer: null, pending: null }
+  hoverAt = null
+  hoverOn = false
+  dropWindows()
+}
+
+function fetchSeekTarget(seconds: number): void {
+  hoverAt = null
+  hoverOn = false
+  if (seekFetch.timer) {
+    seekFetch.pending = seconds
+    return
+  }
+  fetchSeekNow(seconds)
+  const tick = (): void => {
+    const next = seekFetch.pending
+    seekFetch = { timer: null, pending: null }
+    if (next == null) return
+    fetchSeekNow(next)
+    seekFetch.timer = setTimeout(tick, SEEK_FETCH_COALESCE_MS)
+  }
+  seekFetch.timer = setTimeout(tick, SEEK_FETCH_COALESCE_MS)
+}
+
+function fetchSeekNow(seconds: number): void {
+  const c = current
+  if (!c?.loaded || c.local) return
+  const target = inCache(seconds) ? null : seconds
+  fetchAt(c.torrentId, c.fileIndex, target, c.duration, 'seek', { readerWaiting: !cache.idle && !cache.eof }).catch(
+    (err) => console.error('Failed to fetch ahead for a seek:', err)
+  )
+}
+
+function inCache(seconds: number): boolean {
+  return cache.ranges.some(([from, to]) => seconds >= from && seconds <= to)
+}
+
+function syncHover(): void {
+  const c = current
+  if (!c?.loaded || c.local) return
+  const ahead = cache.eof ? Infinity : cache.end - c.pos
+  const want = hoverAt != null && !inCache(hoverAt) && ahead >= (hoverOn ? HOVER_STOP_AHEAD_SEC : HOVER_START_AHEAD_SEC)
+  if (!want && !hoverOn) return
+  hoverOn = want
+  fetchAt(c.torrentId, c.fileIndex, want ? hoverAt : null, c.duration, 'hover').catch((err) =>
+    console.error('Failed to fetch ahead under the seek bar:', err)
+  )
 }
 
 function chapterAt(pos: number): number {
@@ -680,7 +785,8 @@ async function ensureMpv(mpvPath: string): Promise<void> {
     'core-idle',
     'height',
     'demuxer-cache-state',
-    'chapter-list'
+    'chapter-list',
+    'demuxer-cache-idle'
   ]
   observed.forEach((name, i) => command('observe_property', i + 1, name))
   applyUpscaler(getSettings().upscaler)
@@ -758,10 +864,24 @@ function onMessage(msg: MpvMessage): void {
         }
         break
       case 'demuxer-cache-state': {
-        const s = (msg.data ?? {}) as { 'cache-end'?: number; 'eof-cached'?: boolean }
-        cache = { end: typeof s['cache-end'] === 'number' ? s['cache-end'] : 0, eof: s['eof-cached'] === true }
+        const s = (msg.data ?? {}) as {
+          'cache-end'?: number
+          'eof-cached'?: boolean
+          'seekable-ranges'?: { start?: number; end?: number }[]
+        }
+        cache = {
+          end: typeof s['cache-end'] === 'number' ? s['cache-end'] : 0,
+          eof: s['eof-cached'] === true,
+          ranges: (Array.isArray(s['seekable-ranges']) ? s['seekable-ranges'] : [])
+            .filter((r) => typeof r.start === 'number' && typeof r.end === 'number')
+            .map((r) => [r.start!, r.end!]),
+          idle: cache.idle
+        }
         break
       }
+      case 'demuxer-cache-idle':
+        cache.idle = msg.data === true
+        break
       case 'chapter-list':
         chapters = (Array.isArray(msg.data) ? (msg.data as { title?: string; time?: number }[]) : [])
           .filter((c) => typeof c.time === 'number')

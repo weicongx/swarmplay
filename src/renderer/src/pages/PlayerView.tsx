@@ -1,10 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent } from 'react'
 import type { PlayerCommand, PlayerState, PlayerTrack, Upscaler } from '@shared/types'
 import { errorMessage, formatClock, formatSpeed, UPSCALERS } from '../format'
 
 const HIDE_CONTROLS_MS = 3000
 /** How long the seek bar keeps showing a seek's target while playback gets there. */
 const SEEK_HOLD_MS = 8000
+/** The cursor rests this long on the seek bar before a stream starts fetching the spot under it. */
+const PREVIEW_REST_MS = 200
+/** Moves smaller than this (seconds) keep fetching the same spot. */
+const PREVIEW_STEP_SEC = 2
 
 /**
  * Episodes already switched to another upload automatically, so a slow replacement
@@ -31,6 +35,7 @@ export default function PlayerView({
   const [seekPreview, setSeekPreview] = useState<number | null>(null)
   const [seekTarget, setSeekTarget] = useState<{ to: number; at: number } | null>(null)
   const seekDirty = useRef(false)
+  const preview = useRef<{ timer: ReturnType<typeof setTimeout> | null; sent: number | null }>({ timer: null, sent: null })
   const [idle, setIdle] = useState(false)
   const [nvidia, setNvidia] = useState(false)
   const send = (cmd: PlayerCommand): void => void window.api.playerCommand(cmd)
@@ -119,10 +124,47 @@ export default function PlayerView({
     if (!seekDirty.current) return
     seekDirty.current = false
     const to = Number(el.value)
+    // The seek takes over from any fetch under the cursor; one still waiting to start would follow it.
+    const p = preview.current
+    if (p.timer) clearTimeout(p.timer)
+    p.timer = null
+    p.sent = null
     send({ type: 'seek', seconds: to })
     setSeekTarget({ to, at: Date.now() })
     setSeekPreview(null)
   }
+
+  // Resting the cursor on the seek bar (or dragging it) starts fetching that spot
+  // of a stream, so the seek is ready sooner when the bar is let go.
+  const previewAt = (seconds: number | null): void => {
+    const p = preview.current
+    if (p.timer) clearTimeout(p.timer)
+    p.timer = null
+    if (seconds == null) {
+      if (p.sent != null) send({ type: 'seek-preview', seconds: null })
+      p.sent = null
+      return
+    }
+    if (state.local || (p.sent != null && Math.abs(seconds - p.sent) < PREVIEW_STEP_SEC)) return
+    p.timer = setTimeout(() => {
+      p.timer = null
+      p.sent = seconds
+      send({ type: 'seek-preview', seconds })
+    }, PREVIEW_REST_MS)
+  }
+  const previewUnder = (e: PointerEvent<HTMLInputElement>): void => {
+    const r = e.currentTarget.getBoundingClientRect()
+    if (!state.duration || r.width <= 0) return
+    previewAt(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * state.duration)
+  }
+  useEffect(() => () => previewAt(null), [])
+  // Another episode starts with no fetch under the cursor (the main process drops it), so the next move sends one.
+  useEffect(() => {
+    const p = preview.current
+    if (p.timer) clearTimeout(p.timer)
+    p.timer = null
+    p.sent = null
+  }, [state.torrentId, state.fileIndex])
 
   // Until playback reaches the new spot (a stream may still be fetching it), keep
   // showing where it's going rather than snapping back to the old position.
@@ -197,6 +239,8 @@ export default function PlayerView({
               seekDirty.current = true
               setSeekPreview(Number(e.target.value))
             }}
+            onPointerMove={previewUnder}
+            onPointerLeave={() => previewAt(null)}
             onPointerUp={(e) => commitSeek(e.currentTarget)}
             onKeyUp={(e) => commitSeek(e.currentTarget)}
             style={{ ['--pct' as string]: `${played}%`, ['--fetched' as string]: fetchedGradient(state.fetched) }}

@@ -326,6 +326,11 @@ export type PlayerCommand =
   | { type: 'toggle-pause' }
   | { type: 'seek'; seconds: number }
   | { type: 'seek-by'; seconds: number }
+  /**
+   * The seek bar's spot under the cursor, or null once it leaves: a stream starts
+   * fetching there, so a seek to it plays sooner. Doesn't move playback.
+   */
+  | { type: 'seek-preview'; seconds: number | null }
   | { type: 'volume'; value: number }
   | { type: 'toggle-mute' }
   | { type: 'audio'; id: number }

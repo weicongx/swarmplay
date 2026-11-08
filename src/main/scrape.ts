@@ -13,6 +13,16 @@ const FRESH_MS = 10 * 60_000
 
 const scrapedAt = new Map<string, number>()
 
+/** Whether the torrent's stored seeder count came from the tracker within FRESH_MS. */
+export function scrapedRecently(infoHash: string): boolean {
+  return Date.now() - (scrapedAt.get(infoHash) ?? 0) <= FRESH_MS
+}
+
+/** Note a count just stored from a scrape, so it isn't asked for again within FRESH_MS. */
+export function markScraped(infoHash: string): void {
+  scrapedAt.set(infoHash, Date.now())
+}
+
 /** Seeders per info-hash (hex), for the torrents the tracker knows. Failures leave hashes out. */
 export async function scrapeSeeders(infoHashes: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>()

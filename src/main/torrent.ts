@@ -1,9 +1,9 @@
-import { copyFile, mkdir, readdir, rename, rm, rmdir, stat, truncate, utimes } from 'fs/promises'
-import { existsSync } from 'fs'
+import { copyFile, mkdir, open, readdir, rename, rm, rmdir, stat, truncate, utimes } from 'fs/promises'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { execFile } from 'child_process'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { EventEmitter } from 'events'
-import { BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell } from 'electron'
 import {
   VIDEO_EXT,
   type AddTorrentRequest,
@@ -11,6 +11,7 @@ import {
   type TorrentStatus,
   type TorrentStatusInfo
 } from '@shared/types'
+import { mkvCues, mkvCuesAt, mkvElementLength, type Cue, type MkvCuesAt } from './companion/mkv'
 import { getDb, getSettings } from './db'
 import { fetchTorrentFile } from './nyaa'
 import { parseRelease } from './release'
@@ -42,8 +43,13 @@ interface WtServer {
   listen(port: number, host: string, cb: () => void): void
   address(): { port: number }
 }
+interface WtDht {
+  addNode(node: { host: string; port: number }): void
+  toJSON(): { nodes: { host: string; port: number }[] }
+}
 interface WtClient extends EventEmitter {
-  add(input: Buffer, opts: { path: string; deselect: boolean }): WtTorrent
+  dht: WtDht | false
+  add(input: Buffer, opts: { path: string; deselect: boolean; announce?: string[] }): WtTorrent
   remove(torrent: WtTorrent, opts: { destroyStore: boolean }, cb: (err?: Error) => void): Promise<void>
   createServer(opts: { hostname: string; origin: string }): WtServer
   throttleDownload(rate: number): boolean
@@ -125,6 +131,10 @@ function getClient(): Promise<WtClient> {
     const { default: WebTorrent } = await import('webtorrent')
     const c = new WebTorrent() as WtClient
     c.on('error', (err: Error) => console.error('[webtorrent]', err.message))
+    restoreDhtNodes(c)
+    // Also saved while running, as the app may not get to quit cleanly.
+    setTimeout(saveDhtNodes, DHT_FIRST_SAVE_MS).unref()
+    setInterval(saveDhtNodes, DHT_SAVE_EVERY_MS).unref()
 
     // Streams any file of any active torrent; mpv plays from here.
     // `origin: false` is turned into '*' by webtorrent, so pass an origin no web page can have:
@@ -141,6 +151,9 @@ function getClient(): Promise<WtClient> {
 }
 
 export async function initTorrents(): Promise<void> {
+  // Start the client, and with it the DHT, now rather than at the first Play,
+  // so the DHT can find peers as soon as an episode starts.
+  void getClient()
   const rows = getDb().prepare('SELECT * FROM torrents ORDER BY added_at').all() as unknown as TorrentRow[]
   const { seedAfterDownload } = getSettings()
 
@@ -608,6 +621,439 @@ export function fetchedRanges(torrentId: number, fileIndex: number): [number, nu
   return ranges
 }
 
+// ---------------------------------------------------------------------------
+// Fetching a seek's target first.
+//
+// WebTorrent fetches a stream from wherever the player's range request starts,
+// but mpv sends that request only once its read at the old spot returns, which
+// at the edge of what's fetched waits for the next piece: often a second or
+// more, while the old spot keeps the bandwidth. So on a seek the pieces at the
+// target (from its keyframe's cluster, read from the mkv's Cues) are asked for
+// at once, the old spot's stream waits, and faster peers may take blocks over
+// from slow ones there. Hovering over the seek bar fetches the same window
+// alongside playback, so the seek is ready by the time the bar is let go.
+//
+// WebTorrent takes turns between all selections with any priority, whatever
+// its value, so what puts a seek first is the old spot's stream dropping to
+// none, not the window's own priority.
+
+/** Seconds of video a window holds after the target, within the byte bounds below. */
+const WINDOW_SEC = 8
+/**
+ * mpv starts reading an mkv this far before a seek's target, from the keyframe
+ * before that, for subtitles that started earlier (its demuxer-mkv-subtitle-preroll-secs-index).
+ */
+const PREROLL_SEC = 10
+const WINDOW_MIN = 4 * 1024 * 1024
+const WINDOW_MAX = 16 * 1024 * 1024
+/** The longest the old spot's fetch stays behind a seek's; normally it ends at once, when mpv lets go of it. */
+const DEMOTE_MS = 15_000
+/** The mkv header bytes read for where the Cues are */
+const HEAD_BYTES = 64 * 1024
+/** Cues bigger than this aren't read (an episode's are some tens of KB) */
+const CUES_MAX = 4 * 1024 * 1024
+
+/**
+ * WebTorrent's piece selections. Its public select() and deselect() merge with
+ * and cut into the files' own selections, so the windows use the internal
+ * stream selections its HTTP server uses, which stand alone.
+ */
+interface WtSelection {
+  from: number
+  to: number
+  offset: number
+  priority: number
+  isStreamSelection?: boolean
+}
+interface WtInternals {
+  _select(from: number, to: number, priority: number, notify: undefined, isStreamSelection: boolean): void
+  _selections: { _items: WtSelection[]; sort(fn: (a: WtSelection, b: WtSelection) => number): void }
+  _updateSelections(): void
+  /** Pieces whose blocks faster peers may take over; WebTorrent itself never clears them. */
+  _critical: (boolean | null | undefined)[]
+  critical(from: number, to: number): void
+  destroyed: boolean
+}
+
+/** The internals the windows use, or null if this WebTorrent lacks them (then seeks work as before). */
+function internals(t: WtTorrent): WtInternals | null {
+  const i = t as unknown as Partial<WtInternals>
+  const ok =
+    typeof i._select === 'function' &&
+    typeof i._updateSelections === 'function' &&
+    typeof i.critical === 'function' &&
+    Array.isArray(i._critical) &&
+    Array.isArray(i._selections?._items)
+  return ok && !i.destroyed ? (i as WtInternals) : null
+}
+
+/** Mark pieces critical, returning those that weren't, so they can be unmarked once no longer needed. */
+function markCritical(wi: WtInternals, from: number, to: number): number[] {
+  const added: number[] = []
+  for (let i = from; i <= to; i++) if (!wi._critical[i]) added.push(i)
+  if (added.length) wi.critical(from, to)
+  return added
+}
+
+/**
+ * WebTorrent marks the pieces a stream's reader stalls on (and the next one or
+ * two) critical itself, and only once, so those stay marked: a player may be
+ * waiting on one of them right now.
+ */
+const READER_CRITICAL_PIECES = 3
+
+function unmarkCritical(wi: WtInternals, pieces: number[]): void {
+  if (pieces.length === 0) return
+  const waited = new Set<number>()
+  for (const sel of wi._selections._items) {
+    if (!sel.isStreamSelection) continue
+    const next = sel.from + sel.offset
+    for (let i = next; i < next + READER_CRITICAL_PIECES && i <= sel.to; i++) waited.add(i)
+  }
+  for (const i of pieces) if (!waited.has(i)) wi._critical[i] = false
+}
+
+type WindowKind = 'seek' | 'hover'
+interface PieceWindow {
+  torrent: WtTorrent
+  from: number
+  to: number
+  /** The window's selection, last, after any for the pieces mpv's reads at the old spot wait for */
+  sels: WtSelection[]
+  /** Pieces this window marked critical */
+  marked: number[]
+}
+/** At most one window of each kind, across all torrents. */
+const windows: Partial<Record<WindowKind, PieceWindow>> = {}
+/** Bumped by each fetchAt of a kind, so one that finishes after a later one leaves it be. */
+const windowCalls: Record<WindowKind, number> = { seek: 0, hover: 0 }
+
+/** Seek indexes by "infoHash:fileIndex"; null when the file has none to read. */
+const seekIndexes = new Map<string, Cue[] | null>()
+const SEEK_INDEXES_KEPT = 20
+/** Where a file's Cues are, once its header was read, while the Cues themselves are still being fetched */
+const cuesAt = new Map<string, MkvCuesAt>()
+/** Reads in progress, so overlapping seeks share one */
+const seekIndexReads = new Map<string, Promise<Cue[] | null>>()
+
+export interface FetchAtOptions {
+  /**
+   * mpv's read at the old spot is waiting for data (its cache isn't full), so
+   * the piece that read waits for is fetched first: mpv asks for the target only
+   * once that read returns. False when mpv isn't reading, and lets go at once.
+   */
+  readerWaiting?: boolean
+}
+
+/**
+ * Fetch the part of a streaming file at `seconds` ahead of the rest, or stop
+ * (`seconds` null). A 'seek' window puts the file's other streams (the spot
+ * playback left) behind it; a 'hover' window shares the bandwidth with
+ * playback. Each kind has one window at a time, which a new one replaces; a
+ * seek replaces the hover too.
+ */
+export async function fetchAt(
+  torrentId: number,
+  fileIndex: number,
+  seconds: number | null,
+  duration: number | null,
+  kind: WindowKind,
+  opts: FetchAtOptions = {}
+): Promise<void> {
+  const call = ++windowCalls[kind]
+  if (kind === 'seek') windowCalls.hover++
+  const entry = entries.get(torrentId)
+  const t = entry?.torrent?.ready ? entry.torrent : null
+  const f = t?.files[fileIndex]
+  if (seconds == null || !entry || !t || !f || f.length === 0 || f.downloaded >= f.length || !duration || duration <= 0) {
+    if (kind === 'seek') dropWindow('hover')
+    dropWindow(kind)
+    return
+  }
+  const cues = await seekIndex(entry, fileIndex).catch(() => null)
+  // A later call (or a seek, for a hover) took over meanwhile, or the torrent stopped.
+  if (call !== windowCalls[kind] || entry.torrent !== t) return
+  const at = Math.min(Math.max(0, seconds), duration)
+  let start: number
+  let span: number
+  if (cues) {
+    // From the keyframe mpv reads from, PREROLL_SEC before the target, to WINDOW_SEC after it.
+    start = cues[lastCueAt(cues, at - PREROLL_SEC)].pos
+    const after = cues.find((c) => c.time >= at + WINDOW_SEC)
+    span = Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, (after?.pos ?? f.length) - start))
+  } else {
+    // No index: a guess from the average bitrate, starting a little early, so less is fetched on it.
+    span = WINDOW_MIN
+    start = (at / duration) * f.length - span / 4
+  }
+  start = Math.min(Math.max(0, Math.floor(start)), f.length - 1)
+  const pl = t.pieceLength
+  const from = Math.floor((f.offset + start) / pl)
+  const to = Math.floor((f.offset + Math.min(f.length - 1, start + span - 1)) / pl)
+
+  const prev = windows[kind]
+  const prevSel = prev?.sels[prev.sels.length - 1]
+  if (prev && prevSel && prev.torrent === t && prev.from === from && prev.to === to && isLive(t, prevSel)) return
+  if (kind === 'seek') dropWindow('hover')
+  dropWindow(kind)
+  const wi = internals(t)
+  if (!wi || havePieces(t, from, to)) return
+
+  const sels: WtSelection[] = []
+  const marked: number[] = []
+  const add = (a: number, b: number, priority: number): void => {
+    const before = new Set(wi._selections._items)
+    wi._select(a, b, priority, undefined, true)
+    const sel = wi._selections._items.find((x) => !before.has(x))
+    if (sel) sels.push(sel)
+  }
+  if (kind === 'seek') {
+    // mpv asks for the target only once its read at the old spot returns, so
+    // the piece that read waits for comes first; the rest of the old spot waits.
+    const waiting = demoteOthers(t, wi, fileIndex, from, to)
+    if (opts.readerWaiting) {
+      for (const piece of waiting) {
+        marked.push(...markCritical(wi, piece, piece))
+        add(piece, piece, 2)
+      }
+    }
+    marked.push(...markCritical(wi, from, to))
+  }
+  // Priority only orders selections that start at once; WebTorrent then takes turns between them.
+  add(from, to, kind === 'seek' ? 2 : 1)
+  windows[kind] = { torrent: t, from, to, sels, marked }
+}
+
+/** The pieces hurryFrom marked last, unmarked when it's called again. */
+let hurried: { torrent: WtTorrent; marked: number[] } | null = null
+
+/** Let faster peers take over a slow peer's blocks from `byte` on: a phone's player seeking, say. */
+export function hurryFrom(torrentId: number, fileIndex: number, byte: number): void {
+  const t = entries.get(torrentId)?.torrent
+  const f = t?.ready ? t.files[fileIndex] : null
+  const wi = t && internals(t)
+  if (!t || !f || !wi || byte <= 0 || byte >= f.length) return
+  if (hurried?.torrent === t) unmarkCritical(wi, hurried.marked)
+  hurried = null
+  const pl = t.pieceLength
+  const from = Math.floor((f.offset + byte) / pl)
+  const to = Math.floor((f.offset + Math.min(f.length - 1, byte + WINDOW_MIN - 1)) / pl)
+  if (!havePieces(t, from, to)) hurried = { torrent: t, marked: markCritical(wi, from, to) }
+}
+
+function isLive(t: WtTorrent, sel: WtSelection): boolean {
+  return internals(t)?._selections._items.includes(sel) ?? false
+}
+
+function dropWindow(kind: WindowKind): void {
+  const w = windows[kind]
+  delete windows[kind]
+  const wi = w && internals(w.torrent)
+  if (!w || !wi) return
+  let changed = false
+  for (const sel of w.sels) {
+    // Already gone if it was fetched whole.
+    const i = wi._selections._items.indexOf(sel)
+    if (i < 0) continue
+    wi._selections._items.splice(i, 1)
+    changed = true
+  }
+  // After the window's own selections are gone, so only the players' streams count as waiting.
+  unmarkCritical(wi, w.marked)
+  if (changed) wi._updateSelections()
+}
+
+/** Playback ended or moved to another file: stop fetching ahead for seeks. */
+export function dropWindows(): void {
+  windowCalls.seek++
+  windowCalls.hover++
+  dropWindow('seek')
+  dropWindow('hover')
+}
+
+/** The torrent is stopping: its selections go with it. */
+function forgetWindows(t: WtTorrent): void {
+  for (const kind of ['seek', 'hover'] as const) if (windows[kind]?.torrent === t) delete windows[kind]
+  if (hurried?.torrent === t) hurried = null
+}
+
+/**
+ * Put the file's other streams behind a seek: the spot playback left, which mpv
+ * drops as soon as its read there returns. One already fetching inside the
+ * window keeps its place. Any still there after DEMOTE_MS get their place back.
+ * Returns the piece each demoted stream needs next, which its reader waits for.
+ */
+function demoteOthers(t: WtTorrent, wi: WtInternals, fileIndex: number, from: number, to: number): number[] {
+  const f = t.files[fileIndex]
+  const first = Math.floor(f.offset / t.pieceLength)
+  const last = Math.floor((f.offset + f.length - 1) / t.pieceLength)
+  const demoted: { sel: WtSelection; priority: number }[] = []
+  const waiting = new Set<number>()
+  for (const sel of wi._selections._items) {
+    const next = sel.from + sel.offset
+    if (!sel.isStreamSelection || sel.priority <= 0 || sel.to < first || sel.from > last) continue
+    if (next >= from && next <= to) continue
+    demoted.push({ sel, priority: sel.priority })
+    sel.priority = 0
+    if (!t.bitfield.get(next)) waiting.add(next)
+  }
+  if (demoted.length === 0) return []
+  wi._selections.sort((a, b) => b.priority - a.priority)
+  setTimeout(() => {
+    const again = internals(t)
+    if (!again) return
+    let changed = false
+    for (const d of demoted) {
+      if (d.sel.priority === 0 && again._selections._items.includes(d.sel)) {
+        d.sel.priority = d.priority
+        changed = true
+      }
+    }
+    if (!changed) return
+    again._selections.sort((a, b) => b.priority - a.priority)
+    again._updateSelections()
+  }, DEMOTE_MS).unref()
+  return [...waiting]
+}
+
+/** The index of the last cue at or before `seconds` (the first, if none is). */
+function lastCueAt(cues: Cue[], seconds: number): number {
+  let lo = 0
+  let hi = cues.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (cues[mid].time <= seconds + 0.001) lo = mid
+    else hi = mid - 1
+  }
+  return lo
+}
+
+function havePieces(t: WtTorrent, from: number, to: number): boolean {
+  for (let i = from; i <= to; i++) if (!t.bitfield.get(i)) return false
+  return true
+}
+
+/**
+ * The keyframes of an mkv being streamed, from its Cues, once the pieces holding
+ * them are fetched (mpv reads them when it opens the file). Null until then, or
+ * if the file has none. Overlapping calls share one read.
+ */
+function seekIndex(entry: Entry, fileIndex: number): Promise<Cue[] | null> {
+  const key = `${entry.row.info_hash}:${fileIndex}`
+  const known = seekIndexes.get(key)
+  if (known !== undefined) return Promise.resolve(known)
+  let read = seekIndexReads.get(key)
+  if (!read) {
+    read = readSeekIndex(entry, fileIndex, key).finally(() => seekIndexReads.delete(key))
+    seekIndexReads.set(key, read)
+  }
+  return read
+}
+
+async function readSeekIndex(entry: Entry, fileIndex: number, key: string): Promise<Cue[] | null> {
+  const t = entry.torrent
+  const f = t?.ready ? t.files[fileIndex] : null
+  const meta = entry.meta.files[fileIndex]
+  if (!t || !f || !meta) return null
+  const remember = (cues: Cue[] | null): Cue[] | null => {
+    if (seekIndexes.size >= SEEK_INDEXES_KEPT) seekIndexes.delete(seekIndexes.keys().next().value!)
+    seekIndexes.set(key, cues)
+    cuesAt.delete(key)
+    return cues
+  }
+  if (!/\.(mkv|webm)$/i.test(meta.path)) return remember(null)
+  const root = resolve(entry.row.save_path)
+  const path = resolve(root, meta.path)
+  if (!path.startsWith(root + sep)) return null
+
+  // Fetched pieces are on disk; a part not fetched yet is left for next time.
+  const read = async (start: number, length: number): Promise<Buffer | null> => {
+    const end = Math.min(f.length, start + length)
+    if (end <= start) return null
+    const pl = t.pieceLength
+    if (!havePieces(t, Math.floor((f.offset + start) / pl), Math.floor((f.offset + end - 1) / pl))) return null
+    const fh = await open(path, 'r')
+    try {
+      const buf = Buffer.alloc(end - start)
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start)
+      return buf.subarray(0, bytesRead)
+    } finally {
+      await fh.close()
+    }
+  }
+  let where = cuesAt.get(key)
+  if (!where) {
+    const head = await read(0, HEAD_BYTES)
+    if (!head) return null
+    const found = mkvCuesAt(head)
+    if (!found) return remember(null)
+    where = found
+    if (cuesAt.size >= SEEK_INDEXES_KEPT) cuesAt.delete(cuesAt.keys().next().value!)
+    cuesAt.set(key, where)
+  }
+  const top = await read(where.at, 16)
+  if (!top) return null
+  const length = mkvElementLength(top)
+  if (length == null || length > CUES_MAX) return remember(null)
+  const body = await read(where.at, length)
+  if (!body) return null
+  const cues = mkvCues(body, where)
+  return remember(cues && cues.length > 1 ? cues : null)
+}
+
+// ---------------------------------------------------------------------------
+// Finding peers. WebTorrent already asks the trackers and the DHT at once when
+// a torrent starts, and swaps peer lists (PEX) with every peer it connects to.
+
+/**
+ * Well-known public trackers, added to every torrent that isn't private. Nyaa's
+ * uploads mostly list nyaa's own tracker and a few of these; the more trackers,
+ * the more of the swarm is found in the first seconds.
+ */
+const PUBLIC_TRACKERS = [
+  'http://nyaa.tracker.wf:7777/announce',
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://tracker.theoks.net:6969/announce',
+  'udp://tracker.dler.org:6969/announce'
+]
+
+/** DHT nodes saved at quit, so the next start asks them at once instead of building the table from scratch. */
+const DHT_NODES_FILE = 'dht-nodes.json'
+const DHT_NODES_KEPT = 300
+const DHT_FIRST_SAVE_MS = 2 * 60_000
+const DHT_SAVE_EVERY_MS = 15 * 60_000
+
+function restoreDhtNodes(c: WtClient): void {
+  if (!c.dht) return
+  try {
+    const nodes = JSON.parse(readFileSync(join(app.getPath('userData'), DHT_NODES_FILE), 'utf8')) as unknown
+    if (!Array.isArray(nodes)) return
+    for (const n of nodes.slice(0, DHT_NODES_KEPT) as { host?: unknown; port?: unknown }[]) {
+      // Each is pinged, and joins the table only if it answers.
+      if (typeof n?.host === 'string' && Number.isInteger(n.port) && (n.port as number) > 0 && (n.port as number) < 65536) {
+        c.dht.addNode({ host: n.host, port: n.port as number })
+      }
+    }
+  } catch {
+    // None saved yet, or unreadable: the DHT bootstraps as usual.
+  }
+}
+
+function saveDhtNodes(): void {
+  if (!client?.dht) return
+  try {
+    const nodes = client.dht.toJSON().nodes.slice(0, DHT_NODES_KEPT)
+    if (nodes.length) writeFileSync(join(app.getPath('userData'), DHT_NODES_FILE), JSON.stringify(nodes))
+  } catch (err) {
+    console.error('Failed to save DHT nodes:', err)
+  }
+}
+
 /** The torrent's name and info-hash. */
 export function torrentIdentity(torrentId: number): { name: string; infoHash: string } {
   const { row } = mustGet(torrentId)
@@ -630,6 +1076,7 @@ function waitForReady(entry: Entry, timeoutMs = 60_000): Promise<WtTorrent> {
 /** Save progress on quit. DB writes are synchronous, so this finishes before exit. */
 export function shutdownTorrents(): void {
   for (const entry of entries.values()) persistProgress(entry)
+  saveDhtNodes()
   client?.destroy()
 }
 
@@ -770,10 +1217,12 @@ async function start(entry: Entry): Promise<void> {
 
   const torrent = c.add(Buffer.from(entry.row.torrent_file), {
     path: entry.row.save_path,
-    deselect: true
+    deselect: true,
+    // More trackers than the uploader listed find more of the swarm sooner. A
+    // private torrent may only use its own.
+    announce: entry.meta.private ? undefined : PUBLIC_TRACKERS
   })
   entry.torrent = torrent
-
   torrent.on('ready', () => {
     for (const i of entry.selected) torrent.files[i].select()
     if (entry.streamFile != null) torrent.files[entry.streamFile].select()
@@ -789,6 +1238,7 @@ async function start(entry: Entry): Promise<void> {
 function stop(entry: Entry): Promise<void> {
   const torrent = entry.torrent
   if (!torrent || !client) return Promise.resolve()
+  forgetWindows(torrent)
   persistProgress(entry)
   entry.row.uploaded += torrent.uploaded
   entry.torrent = null

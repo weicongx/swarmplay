@@ -12,6 +12,7 @@ import { compareEpisodes, seriesKey } from '@shared/folders'
 import { fetchDescription, findSeries, recentCandidate, type Candidate } from './anilist'
 import { getDb, getSettings } from './db'
 import { getTorrentInfo } from './nyaa'
+import { preferHealthyUpload } from './uploads'
 import {
   addStream,
   addTorrent,
@@ -314,6 +315,15 @@ export async function addRelease(
   releaseId: number,
   download: boolean
 ): Promise<{ torrentId: number; fileIndex: number | null }> {
+  // To stream, a poorly seeded upload gives way to a well-seeded one of the same
+  // episode first. A download keeps the upload that was picked.
+  if (!download) {
+    const followed = getDb()
+      .prepare('SELECT f.folder_id FROM releases r JOIN follows f ON f.id = r.follow_id WHERE r.id = ?')
+      .get(releaseId) as { folder_id: number } | undefined
+    if (followed) await preferHealthyUpload(releaseId, folderTitles(followed.folder_id))
+  }
+
   const rel = getDb()
     .prepare(
       'SELECT r.torrent_url, r.nyaa_id, f.folder_id FROM releases r JOIN follows f ON f.id = r.follow_id WHERE r.id = ?'

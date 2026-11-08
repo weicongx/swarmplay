@@ -6,6 +6,8 @@ export interface ParsedTorrent extends Omit<TorrentInfo, 'series'> {
   infoHash: string
   /** Bytes per piece; files are laid end to end, so pieces at their edges are shared. */
   pieceLength: number
+  /** Flagged private (BEP 27): peers come only from its own trackers, never the DHT or other trackers */
+  private: boolean
 }
 
 /** Read name, files, trackers and info-hash from raw .torrent bytes. */
@@ -37,6 +39,7 @@ export function parseTorrentFile(buf: Buffer): ParsedTorrent {
   return {
     infoHash: createHash('sha1').update(infoBytes).digest('hex'),
     pieceLength: Number(info['piece length']) || 0,
+    private: info.private === 1,
     name,
     files,
     totalLength: files.reduce((sum, f) => sum + f.length, 0),

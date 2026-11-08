@@ -27,17 +27,20 @@ const loaded = () =>
 const TEST_FOLDER = 'ZZ Stream Test'
 const TEST_QUERY = 'overgeared judas 1080p'
 
-/** The test folder, following a weekly series in it if it isn't there yet. */
-const setup = async () => {
+/**
+ * The test folder, following a weekly series in it if it isn't there yet. A check
+ * can use its own folder (named "ZZ …"), search, and pattern for the episode to follow.
+ */
+const setup = async (name = TEST_FOLDER, query = TEST_QUERY, pattern = /S01E0\d/) => {
   let lib = await window.api.getLibrary()
-  let folder = lib.folders.find((f) => f.name === TEST_FOLDER)
+  let folder = lib.folders.find((f) => f.name === name)
   if (!folder || !lib.follows.some((f) => f.folderId === folder.id)) {
-    const page = await window.api.searchNyaa({ query: TEST_QUERY, category: '1_2', filter: 0, sort: 'date' })
-    const pick = page.results.find((r) => /S01E0\d/.test(r.title))
-    if (!pick) throw new Error(`No result for "${TEST_QUERY}" to follow`)
-    await window.api.followSeries(pick, { name: TEST_FOLDER })
+    const page = await window.api.searchNyaa({ query, category: '1_2', filter: 0, sort: 'date' })
+    const pick = page.results.find((r) => pattern.test(r.title))
+    if (!pick) throw new Error(`No result for "${query}" to follow`)
+    await window.api.followSeries(pick, { name })
     lib = await window.api.getLibrary()
-    folder = lib.folders.find((f) => f.name === TEST_FOLDER)
+    folder = lib.folders.find((f) => f.name === name)
   }
   return { lib, folder }
 }

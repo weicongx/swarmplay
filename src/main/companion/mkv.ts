@@ -1,7 +1,8 @@
 // Reads what the phone companion needs from a Matroska (mkv, webm) file's first
 // bytes: the duration (Info's Duration × TimestampScale), and the tracks with
 // their default flags. Both come before the first Cluster, normally within the
-// first few tens of KB.
+// first few tens of KB. Also reads the seek index (Cues), which the torrent
+// engine uses to fetch the right bytes for a seek before the player asks.
 
 import { crc32 } from 'zlib'
 
@@ -21,6 +22,16 @@ const LANGUAGE_IETF = 0x22b59d
 const NAME = 0x536e
 const CRC_32 = 0xbf
 const CLUSTER = 0x1f43b675
+const SEEK_HEAD = 0x114d9b74
+const SEEK = 0x4dbb
+const SEEK_ID = 0x53ab
+const SEEK_POSITION = 0x53ac
+const CUES = 0x1c53bb6b
+const CUE_POINT = 0xbb
+const CUE_TIME = 0xb3
+const CUE_TRACK_POSITIONS = 0xb7
+const CUE_TRACK = 0xf7
+const CUE_CLUSTER_POSITION = 0xf1
 
 /** Reads EBML elements from `buf`; a read that runs past its end gives null. */
 // No TypeScript-only syntax here: scripts/cdp/companion.mjs imports this file in plain Node.
@@ -77,12 +88,8 @@ class Reader {
  * start of a Matroska file or doesn't hold all of the element.
  */
 function topLevel(buf: Uint8Array, want: number): { r: Reader; end: number } | null {
-  const r = new Reader(buf)
-  if (r.id() !== EBML) return null
-  const headerSize = r.size()
-  if (headerSize == null || headerSize < 0) return null
-  r.pos += headerSize
-  if (r.id() !== SEGMENT || r.size() == null) return null
+  const r = segmentReader(buf)
+  if (!r) return null
 
   while (r.pos < buf.length) {
     const id = r.id()
@@ -94,6 +101,17 @@ function topLevel(buf: Uint8Array, want: number): { r: Reader; end: number } | n
     r.pos += size // SeekHead, Void, and so on
   }
   return null
+}
+
+/** A reader at the start of the Segment's data, or null if `buf` isn't the start of a Matroska file. */
+function segmentReader(buf: Uint8Array): Reader | null {
+  const r = new Reader(buf)
+  if (r.id() !== EBML) return null
+  const headerSize = r.size()
+  if (headerSize == null || headerSize < 0) return null
+  r.pos += headerSize
+  if (r.id() !== SEGMENT || r.size() == null) return null
+  return r
 }
 
 /** The duration in seconds, or null if `buf` isn't the start of a Matroska file or Info isn't in it. */
@@ -252,4 +270,138 @@ export function defaultTrackPatches(
     for (let i = 0; i < 4; i++) patches.push({ at: at + i, byte: (crc >>> (8 * i)) & 0xff })
   }
   return { patches, audio: audio != null, sub: sub != null }
+}
+
+/** Where a file's seek index is, from its first bytes. Positions are bytes from the file's start. */
+export interface MkvCuesAt {
+  /** The Cues element (its ID) */
+  at: number
+  /** Where the Segment's data starts: Cues give cluster positions from here */
+  segmentStart: number
+  /** Nanoseconds per Cue time tick */
+  scale: number
+  /** The video track's number, whose cues give keyframes; null if the header has none */
+  videoTrack: number | null
+}
+
+/**
+ * Find the Cues from the file's first bytes: the SeekHead points at them (most
+ * muxers write them after the clusters), or they come before the first Cluster.
+ * Null if `buf` isn't the start of a Matroska file or doesn't say where they are.
+ */
+export function mkvCuesAt(buf: Uint8Array): MkvCuesAt | null {
+  const r = segmentReader(buf)
+  if (!r) return null
+  const segmentStart = r.pos
+  let at: number | null = null
+  while (r.pos < buf.length) {
+    const start = r.pos
+    const id = r.id()
+    const size = r.size()
+    if (id == null || size == null || size < 0) break
+    if (id === CLUSTER) break
+    if (id === CUES) {
+      at = start
+      break
+    }
+    if (id === SEEK_HEAD && r.pos + size <= buf.length) {
+      const end = r.pos + size
+      while (r.pos < end) {
+        const sid = r.id()
+        const ssize = r.size()
+        if (sid == null || ssize == null || ssize < 0 || r.pos + ssize > end) break
+        const seekEnd = r.pos + ssize
+        if (sid === SEEK) {
+          let target: number | null = null
+          let pos: number | null = null
+          while (r.pos < seekEnd) {
+            const eid = r.id()
+            const esize = r.size()
+            if (eid == null || esize == null || esize < 0 || r.pos + esize > seekEnd) break
+            if (eid === SEEK_ID) target = r.uint(esize)
+            else if (eid === SEEK_POSITION) pos = r.uint(esize)
+            r.pos += esize
+          }
+          if (target === CUES && pos != null && at == null) at = segmentStart + pos
+        }
+        r.pos = seekEnd
+      }
+      continue
+    }
+    r.pos += size
+  }
+  if (at == null) return null
+
+  const info = topLevel(buf, INFO)
+  let scale = 1_000_000
+  if (info) {
+    const { r: ir, end } = info
+    while (ir.pos < end) {
+      const id = ir.id()
+      const size = ir.size()
+      if (id == null || size == null || size < 0 || ir.pos + size > end) break
+      if (id === TIMESTAMP_SCALE && size >= 1 && size <= 8) scale = ir.uint(size)
+      ir.pos += size
+    }
+  }
+  const video = mkvTracks(buf)?.tracks.find((t) => t.type === 'video')
+  return { at, segmentStart, scale: scale > 0 ? scale : 1_000_000, videoTrack: video?.number ?? null }
+}
+
+/** The size of the element starting at `buf[0]` (its ID and size included), or null if they aren't all there. */
+export function mkvElementLength(buf: Uint8Array): number | null {
+  const r = new Reader(buf)
+  if (r.id() == null) return null
+  const size = r.size()
+  return size == null || size < 0 ? null : r.pos + size
+}
+
+/** A keyframe: seconds into the video, and the byte its cluster starts at in the file. */
+export interface Cue {
+  time: number
+  pos: number
+}
+
+/** The keyframes in a Cues element (`buf` starts at its ID), in time order. Null if it isn't one. */
+export function mkvCues(buf: Uint8Array, where: MkvCuesAt): Cue[] | null {
+  const r = new Reader(buf)
+  if (r.id() !== CUES) return null
+  const size = r.size()
+  if (size == null || size < 0) return null
+  const end = Math.min(buf.length, r.pos + size)
+  const cues: Cue[] = []
+  while (r.pos < end) {
+    const id = r.id()
+    const psize = r.size()
+    if (id == null || psize == null || psize < 0 || r.pos + psize > end) break
+    const pointEnd = r.pos + psize
+    if (id === CUE_POINT) {
+      let time: number | null = null
+      let pos: number | null = null
+      while (r.pos < pointEnd) {
+        const cid = r.id()
+        const csize = r.size()
+        if (cid == null || csize == null || csize < 0 || r.pos + csize > pointEnd) break
+        const childEnd = r.pos + csize
+        if (cid === CUE_TIME) time = r.uint(csize)
+        else if (cid === CUE_TRACK_POSITIONS && pos == null) {
+          let track: number | null = null
+          let cluster: number | null = null
+          while (r.pos < childEnd) {
+            const tid = r.id()
+            const tsize = r.size()
+            if (tid == null || tsize == null || tsize < 0 || r.pos + tsize > childEnd) break
+            if (tid === CUE_TRACK) track = r.uint(tsize)
+            else if (tid === CUE_CLUSTER_POSITION) cluster = r.uint(tsize)
+            r.pos += tsize
+          }
+          if (cluster != null && (where.videoTrack == null || track === where.videoTrack)) pos = cluster
+        }
+        r.pos = childEnd
+      }
+      if (time != null && pos != null) cues.push({ time: (time * where.scale) / 1e9, pos: where.segmentStart + pos })
+    }
+    r.pos = pointEnd
+  }
+  return cues.sort((a, b) => a.time - b.time)
 }

@@ -18,7 +18,7 @@ import {
   type TrackPick,
   type TrackPrefs
 } from '../player'
-import { endStream, fetchedRanges, prefetch, preparePlayback, streamStats, type PlaybackTarget } from '../torrent'
+import { endStream, fetchedRanges, hurryFrom, prefetch, preparePlayback, streamStats, type PlaybackTarget } from '../torrent'
 import { companionChanged } from './changed'
 import type { Device } from './devices'
 import { defaultTrackPatches, mkvDuration, mkvTracks, type MkvTrack, type Patch } from './mkv'
@@ -563,6 +563,8 @@ export async function serveVideo(
   }
   const patches = live.patches.filter((p) => p.at >= start && p.at <= end)
 
+  // A read from further in is VLC seeking: faster peers may take the first pieces over from slow ones.
+  if (!live.local && start > 0) hurryFrom(live.torrentId, live.fileIndex, start)
   let source: Readable
   try {
     source = live.local ? createReadStream(target.localPath, { start, end }) : await openUpstream(target.source, start, end)
