@@ -1031,6 +1031,13 @@ const DHT_NODES_KEPT = 300
 const DHT_FIRST_SAVE_MS = 2 * 60_000
 const DHT_SAVE_EVERY_MS = 15 * 60_000
 
+interface DhtNode {
+  host: string
+  port: number
+}
+/** The nodes read at start: kept on the next save behind the live ones, so quitting soon after a start doesn't shrink the list. */
+let savedDhtNodes: DhtNode[] = []
+
 function restoreDhtNodes(c: WtClient): void {
   if (!c.dht) return
   try {
@@ -1039,7 +1046,9 @@ function restoreDhtNodes(c: WtClient): void {
     for (const n of nodes.slice(0, DHT_NODES_KEPT) as { host?: unknown; port?: unknown }[]) {
       // Each is pinged, and joins the table only if it answers.
       if (typeof n?.host === 'string' && Number.isInteger(n.port) && (n.port as number) > 0 && (n.port as number) < 65536) {
-        c.dht.addNode({ host: n.host, port: n.port as number })
+        const node = { host: n.host, port: n.port as number }
+        savedDhtNodes.push(node)
+        c.dht.addNode(node)
       }
     }
   } catch {
@@ -1050,8 +1059,12 @@ function restoreDhtNodes(c: WtClient): void {
 function saveDhtNodes(): void {
   if (!client?.dht) return
   try {
-    const nodes = client.dht.toJSON().nodes.slice(0, DHT_NODES_KEPT)
-    if (nodes.length) writeFileSync(join(app.getPath('userData'), DHT_NODES_FILE), JSON.stringify(nodes))
+    const nodes = new Map<string, DhtNode>()
+    for (const n of [...client.dht.toJSON().nodes, ...savedDhtNodes]) {
+      if (nodes.size >= DHT_NODES_KEPT) break
+      nodes.set(`${n.host}:${n.port}`, { host: n.host, port: n.port })
+    }
+    if (nodes.size) writeFileSync(join(app.getPath('userData'), DHT_NODES_FILE), JSON.stringify([...nodes.values()]))
   } catch (err) {
     console.error('Failed to save DHT nodes:', err)
   }

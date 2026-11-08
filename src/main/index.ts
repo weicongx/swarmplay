@@ -1,7 +1,20 @@
-import { app, BrowserWindow, Notification, shell } from 'electron'
+import { app, BrowserWindow, dialog, Notification, shell } from 'electron'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
 import iconIco from '../../resources/icon.ico?asset'
+
+// WebTorrent's uTP peer connections can report a reset (UTP_ECONNRESET and the
+// like) after nothing listens to them any more, mostly while torrents shut down.
+// A lost peer connection is routine, so those are only logged. Any other uncaught
+// error gets the box Electron shows when there's no handler; the app carries on, as it would.
+process.on('uncaughtException', (err: Error & { code?: unknown }) => {
+  if (typeof err?.code === 'string' && err.code.startsWith('UTP_')) {
+    console.warn('[utp]', err.message)
+    return
+  }
+  console.error('Uncaught exception:', err)
+  dialog.showErrorBox('A JavaScript error occurred in the main process', `Uncaught Exception:\n${err?.stack ?? String(err)}`)
+})
 
 // Must match appId in electron-builder.yml. Windows caches a taskbar icon per id,
 // so runs from source (electron.exe, with Electron's icon) use their own id.
@@ -173,7 +186,9 @@ app.on('will-quit', (e) => {
     .catch((err) => console.error('Failed to clean up a stream on quit:', err))
     .finally(() => {
       shutdownTorrents()
-      app.quit()
+      // Not app.quit(): after this handler held off the first quit, Electron can
+      // ignore a second one once no window is left, and stay running windowless.
+      app.exit(0)
     })
 })
 

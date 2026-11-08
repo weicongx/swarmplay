@@ -1251,12 +1251,32 @@ select.move-to {
   padding: 8px 10px;
   max-height: 160px;
   overflow: auto;
-  white-space: pre-wrap;
-  font: inherit;
   font-size: 12px;
+  line-height: 1.5;
   background: var(--panel);
   border: 1px solid var(--divider);
   border-radius: 6px;
+}
+.update-notes > :first-child {
+  margin-top: 0;
+}
+.update-notes > :last-child {
+  margin-bottom: 0;
+}
+.update-notes h4 {
+  margin: 10px 0 4px;
+  font-size: 13px;
+}
+.update-notes p {
+  margin: 6px 0;
+}
+.update-notes ul,
+.update-notes ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.update-notes li + li {
+  margin-top: 2px;
 }
 
 /* Settings → Phone */

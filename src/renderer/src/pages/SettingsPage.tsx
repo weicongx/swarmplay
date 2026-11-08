@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { NYAA_CATEGORIES, NYAA_FILTERS, type PlayerInfo, type Settings, type UpdateStatus, type Upscaler } from '@shared/types'
 import { errorMessage, formatBytes, UPSCALERS } from '../format'
 import PhoneSettings from './PhoneSettings'
+import ReleaseNotes from './ReleaseNotes'
 
 export default function SettingsPage(): JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -307,7 +308,7 @@ function Updates({
           {!status.supported && (
             <small className="muted">Running from source: this downloads and checks the installer, but doesn't run it.</small>
           )}
-          {a.notes && <pre className="update-notes">{a.notes}</pre>}
+          {a.notes && <ReleaseNotes notes={a.notes} />}
         </div>
       )}
       {(error ?? status?.error) && <small className="error-text">{error ?? status?.error}</small>}
