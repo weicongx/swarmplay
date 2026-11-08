@@ -124,6 +124,9 @@ let client: WtClient | null = null
 let clientPromise: Promise<WtClient> | null = null
 let serverPort = 0
 let ticks = 0
+let tickTimer: NodeJS.Timeout | null = null
+/** Set on quit, once the torrents are destroyed: WebTorrent empties their files but leaves them ready. */
+let shutDown = false
 
 function getClient(): Promise<WtClient> {
   clientPromise ??= (async () => {
@@ -207,7 +210,7 @@ export async function initTorrents(): Promise<void> {
   }
 
   await removeOrphanStreamDirs()
-  setInterval(tick, 1000)
+  tickTimer = setInterval(tick, 1000)
 }
 
 /**
@@ -1075,8 +1078,12 @@ function waitForReady(entry: Entry, timeoutMs = 60_000): Promise<WtTorrent> {
 
 /** Save progress on quit. DB writes are synchronous, so this finishes before exit. */
 export function shutdownTorrents(): void {
+  // No more ticks: they'd read the destroyed torrents' emptied file lists, and save their progress as nothing.
+  if (tickTimer) clearInterval(tickTimer)
+  tickTimer = null
   for (const entry of entries.values()) persistProgress(entry)
   saveDhtNodes()
+  shutDown = true
   client?.destroy()
 }
 
@@ -1325,7 +1332,7 @@ interface PlaybackRow {
 
 /** Read each file's progress from the running torrent; returns the selected files' totals. */
 function refreshProgress(entry: Entry): { length: number; downloaded: number } {
-  const active = entry.torrent?.ready ? entry.torrent : null
+  const active = entry.torrent?.ready && !shutDown ? entry.torrent : null
   if (active) entry.fileProgress = active.files.map((f) => (f.length ? f.downloaded / f.length : 1))
   let length = 0
   let downloaded = 0
@@ -1339,7 +1346,7 @@ function refreshProgress(entry: Entry): { length: number; downloaded: number } {
 
 function statusOf(entry: Entry, playback: Map<number, PlaybackRow>): TorrentStatusInfo {
   const { row, meta, torrent } = entry
-  const active = torrent?.ready ? torrent : null
+  const active = torrent?.ready && !shutDown ? torrent : null
   const { length, downloaded } = refreshProgress(entry)
 
   const files = meta.files.map((f) => {
@@ -1352,7 +1359,7 @@ function statusOf(entry: Entry, playback: Map<number, PlaybackRow>): TorrentStat
       length: f.length,
       progress,
       selected,
-      streamUrl: active ? `http://127.0.0.1:${serverPort}${active.files[f.index].streamURL}` : null,
+      streamUrl: active?.files[f.index] ? `http://127.0.0.1:${serverPort}${active.files[f.index].streamURL}` : null,
       isVideo: VIDEO_EXT.test(f.path),
       positionSec: ep?.position_sec ?? 0,
       durationSec: ep?.duration_sec ?? null,
