@@ -455,6 +455,8 @@ export interface AppApi {
   moveEpisodes(episodeIds: number[], folderId: number | null): Promise<void>
   /** Download an episode that was only streamed, to keep it. */
   downloadEpisode(episodeId: number): Promise<void>
+  /** Download every episode in a folder and the folders inside it that isn't kept yet. */
+  downloadFolder(folderId: number): Promise<void>
   /**
    * Delete an episode's downloaded file; it stays in the library to stream.
    * With removeFromLibrary it leaves the library too (the series stays).

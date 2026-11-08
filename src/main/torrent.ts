@@ -1,6 +1,7 @@
 import { copyFile, mkdir, open, readdir, rename, rm, rmdir, stat, truncate, utimes } from 'fs/promises'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { execFile } from 'child_process'
+import crypto, { type DiffieHellman } from 'crypto'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { EventEmitter } from 'events'
 import { app, BrowserWindow, shell } from 'electron'
@@ -87,6 +88,8 @@ interface Entry {
    * so files that were on disk before (startup re-check) don't count as new downloads.
    */
   seenComplete?: Set<number>
+  /** What the running torrent has been asked to fetch so far; see selectNextFiles() */
+  fetching?: { files: Set<number>; stalledTicks: number; widened: number }
   /** The file the player is streaming from this torrent, if it isn't a kept download */
   streamFile: number | null
   /** Every file streamed since the stream started; their data is deleted when it ends */
@@ -115,6 +118,13 @@ let prefetching: { entry: Entry; fileIndex: number } | null = null
 /** How much of the next episode to fetch ahead: its start, and its end (where mkv keeps its seek index). */
 const PREFETCH_HEAD = 40 * 1024 * 1024
 const PREFETCH_TAIL = 2 * 1024 * 1024
+/** How much of a torrent's kept files to ask WebTorrent for at once. */
+const FETCH_AT_ONCE_BYTES = 4 * 1024 ** 3
+/** Slower than this for STALLED_TICKS seconds, a torrent also asks for the files after those. */
+const STALLED_SPEED = 16 * 1024
+const STALLED_TICKS = 20
+/** Peer connections that share one set of encryption keys. */
+const CONNECTIONS_PER_KEY = 32
 
 /** Called when a selected video finishes downloading while the app is running. */
 export function onFileComplete(cb: (torrentId: number, fileIndex: number) => void): void {
@@ -128,8 +138,33 @@ let tickTimer: NodeJS.Timeout | null = null
 /** Set on quit, once the torrents are destroyed: WebTorrent empties their files but leaves them ready. */
 let shutDown = false
 
+/**
+ * Every encrypted peer connection makes a Diffie-Hellman object, and Node checks
+ * the prime each time: about 30 ms, on the thread that also runs the window. The
+ * protocol's prime is fixed and its encryption only disguises the traffic, so
+ * connections share an object for a while. Each still gets its own shared secret.
+ */
+function shareEncryptionKeys(): void {
+  type Create = (prime: string, encoding: 'hex', generator: number) => DiffieHellman
+  const mod = crypto as unknown as { createDiffieHellman: Create }
+  const create = mod.createDiffieHellman
+  let shared: { prime: string; dh: DiffieHellman; uses: number } | null = null
+  mod.createDiffieHellman = (prime, encoding, generator) => {
+    // The protocol's prime is 768 bits; anything else isn't a peer connection's.
+    if (typeof prime !== 'string' || prime.length !== 192 || encoding !== 'hex' || generator !== 2) {
+      return create(prime, encoding, generator)
+    }
+    if (shared?.prime !== prime || shared.uses >= CONNECTIONS_PER_KEY) {
+      shared = { prime, dh: create(prime, encoding, generator), uses: 0 }
+    }
+    shared.uses++
+    return shared.dh
+  }
+}
+
 function getClient(): Promise<WtClient> {
   clientPromise ??= (async () => {
+    shareEncryptionKeys()
     // webtorrent is ESM with top-level await, so it can't be require()d from the CJS main bundle.
     const { default: WebTorrent } = await import('webtorrent')
     const c = new WebTorrent() as WtClient
@@ -271,9 +306,9 @@ export async function addStream(
   return { id: entry.row.id, existed: false }
 }
 
-/** Start keeping a file that was only streamed (or download it again after deleting it). */
-export async function downloadFile(torrentId: number, fileIndex: number): Promise<void> {
-  await keepFiles(mustGet(torrentId), [fileIndex])
+/** Start keeping files that were only streamed (or download them again after deleting them). */
+export async function downloadFiles(torrentId: number, fileIndexes: number[]): Promise<void> {
+  await keepFiles(mustGet(torrentId), fileIndexes)
 }
 
 /**
@@ -1160,12 +1195,37 @@ async function keepFiles(entry: Entry, indexes: number[], folderId?: number | nu
       await moveToLibrary(entry)
     })
   }
-  if (entry.torrent?.ready) for (const i of added) entry.torrent.files[i].select()
+  if (entry.torrent?.ready) {
+    refreshProgress(entry)
+    selectNextFiles(entry, entry.torrent)
+  }
   if (entry.row.status !== 'downloading') {
     setStatus(entry, 'downloading')
     if (!entry.torrent) {
       await ensureDir(entry.row.save_path)
       start(entry)
+    }
+  }
+}
+
+/**
+ * Ask WebTorrent for the next few GiB of a torrent's kept files, and more as they
+ * finish. For every peer with nothing to offer yet, WebTorrent walks all the pieces
+ * it was asked for, each time any peer reports a new piece, so asking for a whole
+ * batch at once keeps the thread that runs the window busy.
+ */
+function selectNextFiles(entry: Entry, torrent: WtTorrent): void {
+  const state = (entry.fetching ??= { files: new Set(), stalledTicks: 0, widened: 0 })
+  const budget = FETCH_AT_ONCE_BYTES * (1 + state.widened)
+  let bytes = 0
+  for (const i of [...entry.selected].sort((a, b) => a - b)) {
+    if (bytes >= budget) break
+    const progress = Math.min(entry.fileProgress[i] ?? 0, 1)
+    if (progress >= 1) continue
+    bytes += entry.meta.files[i].length * (1 - progress)
+    if (!state.files.has(i)) {
+      state.files.add(i)
+      torrent.files[i].select()
     }
   }
 }
@@ -1251,7 +1311,9 @@ async function start(entry: Entry): Promise<void> {
   })
   entry.torrent = torrent
   torrent.on('ready', () => {
-    for (const i of entry.selected) torrent.files[i].select()
+    entry.fetching = undefined
+    refreshProgress(entry)
+    selectNextFiles(entry, torrent)
     if (entry.streamFile != null) torrent.files[entry.streamFile].select()
     if (prefetching?.entry === entry) selectAhead(torrent, prefetching.fileIndex)
   })
@@ -1421,10 +1483,24 @@ function tick(): void {
   for (const entry of entries.values()) {
     if (!entry.torrent?.ready) {
       entry.seenComplete = undefined
+      entry.fetching = undefined
       continue
     }
     refreshProgress(entry)
     const done = (i: number): boolean => (entry.fileProgress[i] ?? 0) >= 1
+
+    if (entry.row.status === 'downloading') {
+      // If the connected peers don't have the files asked for, they may have the ones after.
+      if (entry.fetching) {
+        const stalled = entry.torrent.numPeers > 0 && entry.torrent.downloadSpeed < STALLED_SPEED
+        entry.fetching.stalledTicks = stalled ? entry.fetching.stalledTicks + 1 : 0
+        if (entry.fetching.stalledTicks >= STALLED_TICKS) {
+          entry.fetching.stalledTicks = 0
+          entry.fetching.widened++
+        }
+      }
+      selectNextFiles(entry, entry.torrent)
+    }
 
     // Compare against our own record, not the last progress reading: other callers
     // (the Downloads page) refresh progress between ticks.

@@ -17,7 +17,7 @@ import {
   addStream,
   addTorrent,
   deleteDownload,
-  downloadFile,
+  downloadFiles,
   isKept,
   pruneStreamTorrents,
   removeTorrent
@@ -280,7 +280,65 @@ export function episodeSource(episodeId: number): { torrentId: number; fileIndex
 
 export async function downloadEpisode(episodeId: number): Promise<void> {
   const { torrentId, fileIndex } = episodeSource(episodeId)
-  await downloadFile(torrentId, fileIndex)
+  await downloadFiles(torrentId, [fileIndex])
+}
+
+// Going easy on nyaa when a followed series has many episodes to fetch.
+const RELEASE_GAP_MS = 500
+// One folder at a time, so overlapping requests never add the same release twice.
+let folderDownloads: Promise<unknown> = Promise.resolve()
+
+/**
+ * Download everything in a folder and the folders inside it that isn't kept yet:
+ * episodes only streamed so far, and a followed series' episodes not added yet.
+ */
+export function downloadFolder(folderId: number): Promise<void> {
+  const run = folderDownloads.then(() => downloadMissing(folderId))
+  folderDownloads = run.catch(() => {})
+  return run
+}
+
+async function downloadMissing(folderId: number): Promise<void> {
+  mustGetFolder(folderId)
+  const db = getDb()
+  const subtree = descendants(folderId)
+  const placeholders = subtree.map(() => '?').join(',')
+
+  let failed = 0
+  let firstError = ''
+  const attempt = async (fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn()
+    } catch (err) {
+      failed++
+      firstError ||= err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  // Per torrent, so a batch moves out of the stream folder once rather than once per episode.
+  const episodes = db
+    .prepare(`SELECT torrent_id, file_index FROM episodes WHERE title != '' AND folder_id IN (${placeholders})`)
+    .all(...subtree) as { torrent_id: number; file_index: number }[]
+  const byTorrent = new Map<number, number[]>()
+  for (const e of episodes) {
+    if (!isKept(e.torrent_id, e.file_index)) byTorrent.set(e.torrent_id, [...(byTorrent.get(e.torrent_id) ?? []), e.file_index])
+  }
+  for (const [torrentId, indexes] of byTorrent) await attempt(() => downloadFiles(torrentId, indexes))
+
+  const releases = db
+    .prepare(`${AVAILABLE_SQL} AND f.folder_id IN (${placeholders}) ORDER BY r.episode_num, r.follow_id`)
+    .all(...subtree) as { id: number }[]
+  // Checked again before each: another upload of the episode may have just been added, or the user removed it.
+  const stillAvailable = db.prepare(`${AVAILABLE_SQL} AND r.id = ?`)
+  let started = false
+  for (const { id } of releases) {
+    if (!stillAvailable.get(id)) continue
+    if (started) await new Promise((r) => setTimeout(r, RELEASE_GAP_MS))
+    started = true
+    await attempt(() => addRelease(id, true))
+  }
+
+  if (failed > 0) throw new Error(`${failed} download${failed === 1 ? '' : 's'} couldn't start: ${firstError}`)
 }
 
 /**

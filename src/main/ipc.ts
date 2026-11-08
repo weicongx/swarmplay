@@ -33,6 +33,7 @@ import {
   deleteFolder,
   dismissRelease,
   downloadEpisode,
+  downloadFolder,
   episodeSource,
   getLibrary,
   linkFolder,
@@ -147,6 +148,7 @@ export function registerIpc(): void {
   handle('library:moveFolder', (_e, id: number, parentId: number | null) => moveFolder(id, parentId))
   handle('library:moveEpisodes', (_e, ids: number[], folderId: number | null) => moveEpisodes(ids, folderId))
   handle('library:downloadEpisode', (_e, id: number) => downloadEpisode(id))
+  handle('library:downloadFolder', (_e, id: number) => downloadFolder(id))
   handle('library:deleteEpisode', (_e, id: number, remove: boolean) => {
     // mpv has to let go of the file before it can be deleted. Deleting a download
     // also restarts its torrent, which cuts off a stream of another of its episodes.

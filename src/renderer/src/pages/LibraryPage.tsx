@@ -224,7 +224,9 @@ function FolderHeader({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteDownloads, setDeleteDownloads] = useState(false)
   const [picking, setPicking] = useState(false)
+  const [startingDownloads, setStartingDownloads] = useState(false)
 
+  const missing = useMemo(() => notDownloaded(lib, folder.id), [lib, folder.id])
   const watched = episodes.filter((e) => e.watched).length
   const downloaded = episodes.filter((e) => e.downloaded).length
   const total = episodes.length + available.length
@@ -310,6 +312,19 @@ function FolderHeader({
         {streamFirst && (
           <button className="primary" onClick={() => run(() => window.api.streamRelease(streamFirst.id))}>
             Play Ep {streamFirst.episodeNum}
+          </button>
+        )}
+        {(missing.count > 0 || startingDownloads) && (
+          <button
+            disabled={startingDownloads}
+            onClick={() => {
+              setStartingDownloads(true)
+              run(() => window.api.downloadFolder(folder.id).finally(() => setStartingDownloads(false)))
+            }}
+          >
+            {startingDownloads
+              ? 'Starting downloads…'
+              : `Download all (${missing.count} episode${missing.count === 1 ? '' : 's'}, ${formatBytes(missing.bytes)})`}
           </button>
         )}
         <NewFolderButton parentId={folder.id} label="New subfolder" run={run} />
@@ -940,6 +955,20 @@ function startDrag(ev: DragEvent, item: DragItem): void {
 }
 
 function subtreeEpisodes(lib: LibraryData, folderId: number): EpisodeInfo[] {
+  const ids = subtreeIds(lib, folderId)
+  return lib.episodes.filter((e) => e.folderId != null && ids.has(e.folderId))
+}
+
+/** What "Download all" fetches: episodes only streamed so far, and a followed series' new ones (one upload each). */
+function notDownloaded(lib: LibraryData, folderId: number): { count: number; bytes: number } {
+  const ids = subtreeIds(lib, folderId)
+  const sizes = lib.episodes.filter((e) => e.folderId != null && ids.has(e.folderId) && !e.downloaded).map((e) => e.sizeBytes)
+  const releases = new Map(lib.available.filter((a) => ids.has(a.folderId)).map((a) => [`${a.folderId}:${a.episodeNum}`, a.sizeBytes]))
+  sizes.push(...releases.values())
+  return { count: sizes.length, bytes: sizes.reduce((sum, n) => sum + n, 0) }
+}
+
+function subtreeIds(lib: LibraryData, folderId: number): Set<number> {
   const ids = new Set([folderId])
   let grew = true
   while (grew) {
@@ -951,7 +980,7 @@ function subtreeEpisodes(lib: LibraryData, folderId: number): EpisodeInfo[] {
       }
     }
   }
-  return lib.episodes.filter((e) => e.folderId != null && ids.has(e.folderId))
+  return ids
 }
 
 /** "Ep 5"; for unnumbered episodes "next" in buttons, or the file name in cards. */
