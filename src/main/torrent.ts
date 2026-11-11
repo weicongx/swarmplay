@@ -1,5 +1,5 @@
 import { copyFile, mkdir, open, readdir, rename, rm, rmdir, stat, truncate, utimes } from 'fs/promises'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { execFile } from 'child_process'
 import crypto, { type DiffieHellman } from 'crypto'
 import { basename, dirname, join, resolve, sep } from 'path'
@@ -1265,8 +1265,14 @@ async function moveToLibrary(entry: Entry): Promise<void> {
   let target = folder ? join(root, safeDirName(folder.name)) : root
   const from = resolve(entry.row.save_path)
   const kept = entry.meta.files.filter((f) => entry.selected.has(f.index))
-  // Never write over another release's file with the same name.
-  if (kept.some((f) => existsSync(resolve(target, f.path)))) {
+  // A file already there with this one's name and size is this one, downloaded
+  // before and left behind by Remove (keeping the files): use it, as WebTorrent
+  // checks its pieces on start. Never write over another release's file.
+  const clash = (f: ParsedTorrent['files'][number]): boolean => {
+    const size = statSync(resolve(target, f.path), { throwIfNoEntry: false })?.size
+    return size != null && size !== f.length
+  }
+  if (kept.some(clash)) {
     target = join(target, `${safeDirName(entry.meta.name)} (${entry.row.info_hash.slice(0, 8)})`)
   }
 
