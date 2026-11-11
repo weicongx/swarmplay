@@ -20,6 +20,7 @@ node scripts\cdp\run.mjs scripts\cdp\cleanup.js
 | `speed.js` | Seek times on a busy series at a 2 MiB/s cap: plain seeks, and seeks after the pointer rested on the spot; also start time and peers per second |
 | `batch.js` | Batches of a show with several seasons (Slime 01-48, 49-72, S4 01-24): a series folder with a folder per season from AniList, later batches merging into it, an earlier season folder moving in. Adds to the library only; nothing downloads |
 | `download-all.js` | **Download all**: one season keeps only that season, a series folder covers its seasons, overlapping requests add nothing twice, and the button fetches a followed series' episodes. Capped at 50 KiB/s |
+| `remove.js` | **Remove** in Downloads, keeping the files: a finished episode stays downloaded and leaves the list, an unfinished one goes back to streaming. Run it twice with `relaunch.ps1` between: the second run checks it outlasts a restart, and that downloading again lists it again |
 | `upload.js` | A weakly seeded followed episode switching to a well-seeded upload before it plays (needs a series on nyaa with an upload under 10 seeders) |
 | `companion.mjs` | The phone companion, end to end (see below) |
 | `cleanup.js` | Deletes the test folders and their files |

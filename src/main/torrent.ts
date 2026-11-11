@@ -72,6 +72,8 @@ interface TorrentRow {
   selected_files: string | null
   file_progress: string | null
   uploaded: number
+  /** 0: removed from Downloads, keeping its finished files */
+  listed: number
 }
 
 interface Entry {
@@ -377,8 +379,10 @@ export async function removeTorrent(id: number, deleteFiles: boolean): Promise<v
 }
 
 /**
- * Remove a torrent from Downloads. Its episodes stay in the library to stream;
- * a torrent with no episodes there (no video files) goes completely.
+ * Remove a torrent from Downloads; a torrent with no episodes in the library
+ * (no video files) goes completely. With deleteFiles its episodes stay in the
+ * library to stream. Without, it stops: finished episodes stay downloaded and
+ * play from disk, and unfinished ones go back to streaming.
  */
 export async function removeDownload(id: number, deleteFiles: boolean): Promise<void> {
   const entry = mustGet(id)
@@ -388,15 +392,29 @@ export async function removeDownload(id: number, deleteFiles: boolean): Promise<
   if (n === 0) return removeTorrent(id, deleteFiles)
 
   await withLock(entry, async () => {
+    refreshProgress(entry)
     await stop(entry)
-    if (deleteFiles && !isStreamDir(entry.row.save_path)) {
-      await deleteFilesOf(entry, entry.meta.files.map((f) => f.index))
+    // Full size on disk counts too: until a torrent has checked its files, their
+    // progress isn't known. It checks them again whenever it next starts.
+    const finished = (i: number): boolean => {
+      if ((entry.fileProgress[i] ?? 0) >= 1) return true
+      const f = entry.meta.files[i]
+      if (statSync(resolve(entry.row.save_path, f.path), { throwIfNoEntry: false })?.size !== f.length) return false
+      entry.fileProgress[i] = 1
+      return true
     }
-    entry.selected.clear()
+    for (const i of [...entry.selected]) {
+      if (deleteFiles || !finished(i)) entry.selected.delete(i)
+    }
     saveSelection(entry)
     entry.seenComplete = undefined
-    // Without deleteFiles the files stay where they are, no longer managed by the app.
-    await becomeStreamOnly(entry, false)
+    if (entry.selected.size === 0) {
+      await becomeStreamOnly(entry, true)
+    } else {
+      await clearUnkept(entry, [])
+      setStatus(entry, 'done')
+      setListed(entry, false)
+    }
     persistProgress(entry)
   })
   broadcast()
@@ -1349,6 +1367,14 @@ function withLock(entry: Entry, fn: () => Promise<void>): Promise<void> {
 function setStatus(entry: Entry, status: PersistedStatus): void {
   entry.row.status = status
   getDb().prepare('UPDATE torrents SET status = ? WHERE id = ?').run(status, entry.row.id)
+  // Downloading again (more episodes, or one played that wasn't finished): back in Downloads.
+  if (status === 'downloading') setListed(entry, true)
+}
+
+function setListed(entry: Entry, listed: boolean): void {
+  if ((entry.row.listed === 1) === listed) return
+  entry.row.listed = listed ? 1 : 0
+  getDb().prepare('UPDATE torrents SET listed = ? WHERE id = ?').run(entry.row.listed, entry.row.id)
 }
 
 /**
@@ -1465,6 +1491,7 @@ function statusOf(entry: Entry, playback: Map<number, PlaybackRow>): TorrentStat
     name: row.name,
     savePath: row.save_path,
     status,
+    listed: row.listed === 1,
     streaming: isStreaming,
     aheadFile: prefetching?.entry === entry ? prefetching.fileIndex : null,
     error: entry.error,

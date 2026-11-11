@@ -107,6 +107,8 @@ export interface TorrentStatusInfo {
   name: string
   savePath: string
   status: TorrentStatus
+  /** False once removed from Downloads with its files kept: they stay downloaded */
+  listed: boolean
   /** The player is streaming a file from it that isn't kept */
   streaming: boolean
   /** File whose start is being fetched ahead because it plays next, or null */

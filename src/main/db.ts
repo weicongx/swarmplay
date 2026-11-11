@@ -141,6 +141,10 @@ const MIGRATIONS: string[] = [
   -- A series folder holding a folder per season: the AniList id of the show's
   -- first season, so every batch of the show finds it. NULL: an ordinary folder.
   ALTER TABLE folders ADD COLUMN franchise_id INTEGER;
+  `,
+  `
+  -- 0: removed from Downloads. Its finished files stay downloaded, played from disk.
+  ALTER TABLE torrents ADD COLUMN listed INTEGER NOT NULL DEFAULT 1;
   `
 ]
 

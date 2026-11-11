@@ -29,8 +29,8 @@ export default function DownloadsPage(): JSX.Element {
   }
 
   if (!torrents) return <div className="page" />
-  // Torrents with nothing kept are only here while they stream.
-  const shown = torrents.filter((t) => t.streaming || t.files.some((f) => f.selected))
+  // Torrents with nothing kept, or removed with their files kept, are only here while they stream.
+  const shown = torrents.filter((t) => t.streaming || (t.listed && t.files.some((f) => f.selected)))
 
   return (
     <div className="page">
@@ -148,7 +148,11 @@ function TorrentCard({
             <button onClick={() => setConfirmRemove(true)}>Remove</button>
           ) : (
             <span className="confirm">
-              <span className="muted">Its episodes stay in the library to stream.</span>
+              <span className="muted">
+                {deleteFiles
+                  ? 'Its episodes stay in the library to stream.'
+                  : 'Finished episodes stay downloaded in the library; unfinished ones go back to streaming.'}
+              </span>
               <label>
                 <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} />{' '}
                 Also delete the files
