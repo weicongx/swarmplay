@@ -1,13 +1,25 @@
 # Swarmplay
 
-A Windows desktop app for streaming anime from torrents. Search nyaa.si, pick a release, and start watching in the app within seconds, without saving the episode to disk. Episodes land in a library of series folders with AniList cover art, playback picks up where you left off, and you can download any episode to keep it.
+A peer-to-peer (BitTorrent) video streaming desktop client for Windows. Playback starts within seconds in an embedded player, episodes are organized in a media library with resume and autoplay, and a paired phone can browse the library and play through the PC.
+
+**Tech stack:** Electron, React, TypeScript, WebTorrent, mpv, SQLite (`node:sqlite`), AniList GraphQL, NSIS.
+
+## Engineering highlights
+
+- **Streaming without keeping files.** WebTorrent serves each torrent through a local HTTP server on `127.0.0.1` that answers range requests, and each request moves download priority to the pieces mpv is reading. Stream data goes to a hidden temporary folder that is deleted when playback stops. Seeks are coordinated with WebTorrent's piece selection: the player tells the engine where it is seeking, the engine reads the mkv seek index to fetch the right keyframe window first, and those pieces are marked critical.
+- **Embedded native player.** One long-lived mpv process renders with `--wid` into a borderless Win32 child window that the main process keeps aligned with the player page's video area, with the React controls drawn on top. It is controlled over JSON IPC on a named pipe.
+- **Stall recovery.** After 15 seconds of buffering, or 15 seconds with no peers, the player finds the best-seeded other upload of the same episode and resumes it at the same position, carrying over watched state and resume position. It asks first by default; Settings can make it switch automatically.
+- **Phone companion security.** Single-use 8-character pairing codes that expire after 5 minutes, with rate limiting. The PC stores only a SHA-256 of each phone's cookie. Video URLs are HMAC-signed with a key per phone. The API is an allowlist, every request's `Host` header is checked to block DNS rebinding, POSTs need a custom header and matching `Origin`, and there are no CORS headers.
+- **Input safety.** Torrent file paths that would escape the save folder are refused before anything is written, and file operations re-check that paths stay inside the torrent's folder. `.torrent` files are fetched only from the configured host and capped at 10 MB. The window can't navigate away from the app, and the main process answers IPC only from the app's own page.
+- **Release pipeline.** An NSIS installer with mpv bundled, a release script that builds it and drafts notes, and in-app updates from GitHub Releases that verify the installer's SHA-256 against the digest GitHub lists before running it.
+- **Persistence.** SQLite through Electron's built-in `node:sqlite`, with schema migrations, rotating daily backups (newest 7 kept), and a startup check that sets aside a stray write-ahead log that would downgrade the schema or empty the library.
 
 ## Features
 
-- **Search nyaa.si** by category and filter (trusted only, no remakes). Results come sorted by most seeders, the uploads that stream best, or by date, size or downloads, across every match rather than just the newest. **Load more** pages through up to 1000 results. Press **▶** on a result to start streaming it straight away, filed in the series' folder, or open the result to see its file list first.
-- **Streaming first.** Press **Stream** to play an episode within seconds. WebTorrent fetches the pieces near the playhead first. Nothing is kept: the data goes to a hidden temporary folder that's deleted when playback stops. The episode stays in the library so you can stream it again. If you rewatch a lot, Settings can keep recently streamed episodes up to a size you choose, so they replay without peers. This is off by default.
+- **Search** a configured public torrent index (nyaa.si by default; the mirror URL is set in Settings) by category and filter (trusted only, no remakes). Results are sorted by most seeders (the uploads that stream best), or by date, size or downloads, across every match rather than just the newest. **Load more** pages through up to 1000 results. Press **▶** on a result to stream it at once, filed in the series' folder, or open it to see its file list first.
+- **Streaming first.** Press **Stream** to play an episode within seconds. WebTorrent fetches the pieces near the playhead first. Nothing is kept: the data goes to a hidden temporary folder that's deleted when playback stops, and the episode stays in the library to stream again. Settings can keep recently streamed episodes up to a size you choose, so they replay without peers (off by default).
 - **Download only what you want to keep.** Press **Download** in Search, or on any library episode, even mid-stream. An episode streamed and then downloaded keeps what's already fetched.
-- **In-app player.** mpv draws the video inside the app window, with Swarmplay's own controls: seek bar, volume, audio and subtitle tracks, and fullscreen. The audio and subtitles you pick are remembered for the series, so its other episodes start with the same language, or with subtitles off. **Now streaming** at the foot of the sidebar shows the episode, download speed and peers. Browsing the app shrinks the player into a corner (the mini player), where the episode keeps playing. While streaming, the seek bar shades the parts already fetched, which play without waiting. A click on the seek bar goes to that spot, and the bar stays there while a stream fetches it. A seek fetches the spot you picked before the one you left, and with enough buffered, resting the pointer on the seek bar starts fetching under it before you click. When it buffers, the player shows the download speed and peer count.
+- **In-app player.** mpv draws the video inside the app window, with Swarmplay's own controls on top: seek bar, volume, audio and subtitle tracks, and fullscreen. Audio and subtitle choices are remembered per series, including subtitles off. **Now streaming** at the foot of the sidebar shows the episode, download speed and peers. Browsing the app shrinks the player into a corner (the mini player), where it keeps playing. While streaming, the seek bar shades the parts already fetched, which play without waiting. A click on the seek bar goes to that spot and the bar stays there while it's fetched; a seek fetches the new spot before the old one, and with enough buffered, resting the pointer on the bar starts fetching under it before you click. While buffering, the player shows the download speed and peer count.
 - **Resume and autoplay.** Your position saves every few seconds. An episode counts as watched at 90%, and the next one in the folder starts automatically, including new episodes of a followed series you haven't streamed yet.
 - **Skip intro and credits.** When a release names its chapters (OP, Opening, ED, Ending and similar), the player shows **Skip intro** during the opening and **Skip credits** during the ending. Settings can skip openings, or both, automatically.
 - **Next episode loads early.** Near the end of an episode, Swarmplay starts fetching the start of the next one, so autoplay (or **Next**) begins at once instead of waiting for peers. If you stop watching instead, that data is deleted like any stream.
@@ -212,10 +224,19 @@ licenses/          license notices for the bundled mpv and qrcode-generator
 - Windows only. The embedded player relies on mpv's `--wid` and Win32 child windows.
 - Search reaches at most 1000 results, nyaa's own cap. On a mirror whose search page can't be read, only the newest 75 come back (from RSS), so older releases need a more specific query.
 - When running from source, the taskbar icon and the notification sender show as Electron. The installed app shows Swarmplay's name and icon. Source runs use a separate app ID (`com.weicongx.swarmplay.dev`) so that Windows' per-ID icon cache doesn't mix up the two.
-- The development and installed builds share the same database.
-- **Privacy.** Like any BitTorrent client, Swarmplay shows your IP address to the trackers and peers of every torrent you stream or download, and they can see what you fetch. Seeder counts are scraped from nyaa's tracker over plain HTTP, which shows the info-hashes looked up to anyone on the network path. Every torrent that isn't flagged private is also announced to a list of well-known public trackers (in `torrent.ts`), and the app joins the BitTorrent DHT when it starts, even before you play anything. Use a VPN that allows torrent traffic if that matters to you. Swarmplay sends nothing else about you: no accounts, telemetry or analytics. It contacts nyaa, the trackers, the DHT and peers, AniList for metadata, and the GitHub API for update checks.
+- The development and installed builds share the same database unless `SWARMPLAY_PROFILE` is set.
 - **Phone on the home network.** The phone talks to the PC over plain HTTP. Someone else on your Wi-Fi could see what you watch, and could copy a phone's cookie or video links. Through Tailscale the connection is encrypted. If a phone is lost, or you're unsure, **Remove** it in Settings: its cookie and links stop working at once.
 - The UI colors are sampled from the Claude desktop app's dark theme.
+
+## Privacy
+
+Like any BitTorrent client, Swarmplay shows your IP address to the trackers and peers of every torrent you stream or download, and they can see what you fetch. Seeder counts are scraped from nyaa's tracker over plain HTTP, which shows the info-hashes looked up to anyone on the network path. Every torrent that isn't flagged private is also announced to a list of well-known public trackers (in `torrent.ts`), and the app joins the BitTorrent DHT when it starts, even before you play anything. Use a VPN that allows torrent traffic if that matters to you.
+
+Swarmplay sends nothing else about you: no accounts, telemetry or analytics. It contacts the configured search index, the trackers, the DHT and peers, AniList for metadata, and the GitHub API for update checks.
+
+## Responsible use
+
+Swarmplay is a BitTorrent client. It hosts no content. You are responsible for what you download and share, and for complying with copyright law where you live. It is intended for content you have the right to access.
 
 ## Credits
 
@@ -226,7 +247,3 @@ licenses/          license notices for the bundled mpv and qrcode-generator
 - [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) by Kazuhiko Arase for the pairing QR codes (MIT license, see `licenses/`)
 - [AniList](https://anilist.co) for series metadata and cover art
 - [Electron](https://www.electronjs.org), [electron-vite](https://electron-vite.org) and [React](https://react.dev)
-
-## Disclaimer
-
-Swarmplay is a torrent client. You are responsible for what you download and share, and for following copyright law where you live.
